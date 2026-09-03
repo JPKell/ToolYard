@@ -1,0 +1,132 @@
+[importlinter]
+root_package = toolyard
+include_external_packages = True
+
+[importlinter:contract:no-application-imports]
+# Master architecture §2: packages never import applications. Never weakened, never extended —
+# a package that "needs" an application type has been handed application responsibility.
+name = ToolYard must not import applications
+type = forbidden
+source_modules = toolyard
+forbidden_modules =
+    freeweight
+    loadcoach
+    ideapress
+    promptcadence
+
+[importlinter:contract:no-sibling-packages]
+# Spec §5: "Nothing else — in particular not `setspec` (records are in-process values;
+# applications serialize them) and no sibling capability package." Never weakened, never extended.
+name = ToolYard must not import sibling capability packages
+type = forbidden
+source_modules = toolyard
+forbidden_modules =
+    setspec
+    modelrack
+    sweatmeter
+    weightsdb
+    mirrorwall
+    cutctx
+    loadledger
+    commissioner
+    spotcheck
+
+[importlinter:contract:no-model-access]
+# Spec §3: "No model access and no provider JSON." ToolYard exports a neutral wire definition and
+# the caller adapts it; there is no client here to repurpose. Never weakened, never extended.
+#
+# allow_indirect_imports: these contracts describe what *this package's own modules* import. A
+# chain through a dependency would be that dependency's budget to answer for.
+name = ToolYard must hold no path to a model
+allow_indirect_imports = True
+type = forbidden
+source_modules = toolyard
+forbidden_modules =
+    openai
+    anthropic
+    ollama
+    litellm
+    transformers
+    torch
+    huggingface_hub
+
+[importlinter:contract:no-persistence]
+# Spec §10: "Data ownership: none." The application persists records through its own
+# `ToolCallStore`; ToolYard defines the protocol and an in-memory implementation for tests.
+# Never weakened, never extended.
+name = ToolYard must touch no database
+allow_indirect_imports = True
+type = forbidden
+source_modules = toolyard
+forbidden_modules =
+    sqlalchemy
+    alembic
+    sqlite3
+
+[importlinter:contract:subprocess-only-in-the-sandbox]
+# LAYERED, and written for the module that does not exist yet. ADR-0053 decision 5 and ADR-0018
+# put every process launch behind one door: the container → bwrap → refuse ladder. Phase 2 (row D1)
+# writes `toolyard.sandbox` and *that module alone* may import `subprocess`; the exemption below is
+# already here so D1 adds a module rather than editing a boundary rule.
+#
+# `unmatched_ignore_imports_alerting = none` is what lets an exemption name an import that does not
+# exist yet. It is not a weakening: any *other* module importing `subprocess` still fails.
+name = Only the sandbox may import subprocess
+allow_indirect_imports = True
+unmatched_ignore_imports_alerting = none
+type = forbidden
+source_modules = toolyard
+forbidden_modules =
+    subprocess
+    multiprocessing
+    pty
+ignore_imports =
+    toolyard.sandbox -> subprocess
+
+[importlinter:contract:http-only-in-the-fetch-tool]
+# LAYERED, same shape. ADR-0053 decision 6 puts the ADR-0026 §3 checks where the socket is opened.
+# Phase 3 (row E2) writes `toolyard.tools.fetch` and *that module alone* may import `httpx`; every
+# other HTTP client stays forbidden outright, in every module, forever — a second client is a
+# second chance to omit the redirect check.
+name = Only the fetch tool may hold an HTTP client
+allow_indirect_imports = True
+unmatched_ignore_imports_alerting = none
+type = forbidden
+source_modules = toolyard
+forbidden_modules =
+    httpx
+    requests
+    aiohttp
+    urllib3
+    urllib
+    http
+    socket
+    ssl
+ignore_imports =
+    toolyard.tools.fetch -> httpx
+
+[importlinter:contract:filesystem-only-where-containment-lives]
+# LAYERED. Spec §14: no argument is ever interpolated into a path. The way that is kept true is
+# that path handling exists in one place — `toolyard.containment` — which resolves before it
+# compares. Phase 2's `toolyard.sandbox` and Phase 3's `toolyard.tools.files` are the two modules
+# that join it; their exemptions are already written.
+name = Filesystem access lives only where containment does
+allow_indirect_imports = True
+unmatched_ignore_imports_alerting = none
+type = forbidden
+source_modules = toolyard
+forbidden_modules =
+    os
+    pathlib
+    shutil
+    tempfile
+    glob
+    fnmatch
+ignore_imports =
+    toolyard.containment -> pathlib
+    toolyard.containment -> os
+    toolyard.sandbox -> pathlib
+    toolyard.sandbox -> os
+    toolyard.sandbox -> shutil
+    toolyard.sandbox -> tempfile
+    toolyard.tools.files -> pathlib
