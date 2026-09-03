@@ -119,6 +119,10 @@ class ToolRegistry:
 class SandboxPaths:
     write_root: Path
     read_roots: tuple[Path, ...] = ()
+    # Validated on construction: every root is absolute (a relative root would make containment
+    # resolve against the process working directory, which §11.3 forbids), and no root is equal to
+    # or an ancestor of another (the path half and the subprocess half would otherwise disagree
+    # about a read root inside the write root). Either failure raises ValidationError.
 
 class Sandbox(Protocol):               # a port: the executor depends on it, a phase supplies it
     def resolve_read(self, candidate: str, paths: SandboxPaths) -> Path: ...    # or PathEscape
@@ -129,6 +133,8 @@ class Sandbox(Protocol):               # a port: the executor depends on it, a p
                      network: bool = False) -> SubprocessResult: ...
     # tier UNAVAILABLE ⇒ refusal, never an unisolated run (ADR-0018's rule, verbatim)
     # env None ⇒ the EMPTY allowlist, never os.environ (§14)
+    # network True ⇒ refused as a caller bug in v1: no shipped tool runs a subprocess with
+    # network, and a door with no consumer stays shut (§14)
 
 @dataclass(frozen=True, slots=True)
 class SubprocessResult:
@@ -139,6 +145,8 @@ class SubprocessResult:
     tier: IsolationTier                # which rung of the ladder actually ran it
     timed_out: bool                    # the process tree was killed for exceeding its limit
     limits_unenforced: tuple[str, ...] = ()   # limits this platform could not apply (ADR-0016)
+    output_truncated: bool = False     # a stream hit the cap; reading stopped, the tree was killed,
+                                       # and the text carries the truncation label
 
 class ToolExecutor:
     def __init__(self, registry: ToolRegistry, sandbox: Sandbox, *,
@@ -183,7 +191,10 @@ class ToolCallStore(Protocol):
 read_file_tool()      # READ_ONLY, NONE  — read within read_roots ∪ write_root, size-capped
 write_file_tool()     # MUTATING,  NONE  — write within write_root only; parents created inside it
 list_dir_tool()       # READ_ONLY, NONE
-run_command_tool()    # MUTATING,  NONE  — argv form only (never a shell string), isolated per tier
+run_command_tool(sandbox: Sandbox)
+                      # MUTATING,  NONE  — argv form only (never a shell string), isolated per
+                      # tier; takes the SAME sandbox instance the executor holds, so the tier the
+                      # executor checked is the tier the command runs under
 http_fetch_tool(allowed_hosts: Sequence[str], *, max_bytes: int = 8_388_608)
                       # READ_ONLY, NETWORK — ADR-0026 §3 checks before and during the fetch
 
@@ -322,14 +333,20 @@ must not reach the model as though it had not.
   rather than passed to a handler.
 * `run_command` takes argv, never a shell string; no `shell=True` anywhere in the package (a test
   greps for it); environment passed to the child is an explicit allowlist, never `os.environ`.
-* The bwrap tier unshares user/pid/net namespaces (network only for tools declaring `NETWORK`,
-  and `run_command` never does in v1), binds `write_root` read-write, `read_roots` read-only, and
-  nothing else from the host.
+* The bwrap tier unshares user/pid/net namespaces, binds `write_root` read-write, `read_roots`
+  read-only, the minimal runtime read-only (`/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` and a short
+  named list of `/etc` entries — never `/etc` whole), and nothing else from the host.
+  `run_isolated`'s `network` flag is refused in v1: no shipped tool runs a subprocess with network,
+  and a door with no consumer stays shut until one is named.
 * Secrets: handlers receive only `ToolContext`; nothing in ToolYard reads or forwards application
   configuration, so an API key cannot leak through a tool by construction.
-* Resource limits on subprocesses: CPU time, file size, process count via `resource` where the
-  platform supports it, recorded when it does not ([ADR-0016](../../adr/0016-unavailable-is-not-zero.md):
-  an unenforceable limit is reported, not assumed).
+* Resource limits on subprocesses — CPU time, memory, file size, process count — are rlimits
+  applied **inside** the sandbox (`prlimit` under bwrap; cgroup limits plus `--ulimit` under a
+  container), never by a `preexec_fn` in the application's process, which is unsafe under threads
+  and, for `RLIMIT_NPROC`, is checked against the host user's task count before the namespace
+  exists. A limit a rung cannot apply is named in `limits_unenforced`
+  ([ADR-0016](../../adr/0016-unavailable-is-not-zero.md): an unenforceable limit is reported, not
+  assumed).
 
 ## 15. Performance
 

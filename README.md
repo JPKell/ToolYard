@@ -133,7 +133,7 @@ are not a complete sequence. A request that fails every check is walked down all
 | **`redact_args` means redacted** | `args_sha256` always present, `args_json` `None`; the plaintext reaches no field, at no length |
 | **Argument schemas must be closed** | `additionalProperties: false` at *every* object subschema, checked at construction — an open schema is a tool a model can pass unreviewed arguments to |
 | **`$ref` is refused in a tool schema** | A reference is a URI, and a validator handed an unresolved one tries to *fetch* it |
-| **Containment is resolution-then-check** | Fully resolved — symlinks, `..`, relative parts — *then* compared by path ancestry, so `/data` and `/database` are two roots |
+| **Containment is resolution-then-check** | Fully resolved — symlinks, `..`, relative parts — *then* compared by path ancestry, so `/data` and `/database` are two roots; `SandboxPaths` refuses relative or overlapping roots at construction |
 | **Refusal text is prompt surface** | A reason names the failed check; never the allowlist's members and never a containment root's path |
 | **Wire definitions are byte-stable** | Fixed key set, deep-copied schema, sorted export order — because PromptCadence hashes them into turn records |
 | **No `shell=True`, anywhere** | An AST test over `src/` says so, and a second one pins the package to exactly one process-launch site |
@@ -163,7 +163,8 @@ outcome = sandbox.run_isolated(
     timeout_seconds=10.0,
     env={"PATH": "/usr/bin:/bin"},  # the allowlist; None means *nothing*, never os.environ
 )
-outcome.exit_code, outcome.stdout, outcome.tier, outcome.timed_out, outcome.limits_unenforced
+outcome.exit_code, outcome.stdout, outcome.tier, outcome.timed_out, outcome.output_truncated
+outcome.limits_unenforced
 ```
 
 * **The probe executes a canary.** Each rung is proven by running the exact argv `run_isolated`
@@ -177,9 +178,13 @@ outcome.exit_code, outcome.stdout, outcome.tier, outcome.timed_out, outcome.limi
   and no rung below refusal.
 * **What a command sees.** The write root read-write and the read roots read-only, bound in place
   and nothing else from the host beyond the minimal runtime (`/usr`, `/bin`, `/sbin`, `/lib`,
-  `/lib64` and six named `/etc` entries); a private `/tmp`, `/proc` and `/dev`; no network unless
-  the caller passes `network=True`, which only a tool declaring `NETWORK` may; the environment the
-  caller named and nothing else.
+  `/lib64` and six named `/etc` entries); a private `/tmp`, `/proc` and `/dev`; **no network** —
+  `run_isolated`'s `network` flag is refused in v1, because no shipped tool runs a subprocess with
+  network and a door with no consumer stays shut; the environment the caller named and nothing
+  else.
+* **The workspace is validated where it is built.** `SandboxPaths` refuses a relative root (it
+  would resolve against the process working directory) and roots that are equal to or contain one
+  another (the two containment halves would disagree about them), at construction.
 * **Timeouts kill the tree**, output bombs are capped and killed with the truncation label on the
   text, and a `run_command`-style tool must declare `requires_isolation` — the executor refuses it
   before any handler runs on a host with no tier, and ToolYard cannot detect a handler that reaches

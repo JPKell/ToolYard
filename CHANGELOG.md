@@ -46,6 +46,14 @@ order, path containment, the record, and the tiered isolation ladder. **Nothing 
   an executable lookup that cannot see `podman` or `docker`, so the middle rung is exercised
   rather than masked by the top one. Skipped, loudly, where a rung is not available.
 * **`tests/unit/test_boundaries.py`** now also pins the package to exactly one process-launch site.
+* **`SandboxPaths` is validated at construction** (spec §7, amended at D1): every root absolute, no
+  root equal to or containing another. A relative root would resolve against the process working
+  directory; overlapping roots would make the path half and the subprocess half disagree.
+* **`SubprocessResult.output_truncated`** (spec §7, amended at D1) — a stream hit the cap, reading
+  stopped and the tree was killed. Distinct from `timed_out`; defaults to `False`.
+* **`run_isolated(network=True)` is refused** as a caller bug (spec §14, amended at D1): no
+  shipped tool runs a subprocess with network. Both rungs' argv builders carry no network branch
+  at all; the flag stays on the port so naming a consumer is a one-line change.
 
 ### Added — Phase 1
 
@@ -90,6 +98,16 @@ Recorded in `D1_HANDOFF.md`, for E2 and E4:
 * **A decided rung is never re-decided.** A runtime that vanishes after the probe raises
   `ToolYardError`; it is never quietly replaced by a weaker rung.
 * **Non-Linux platforms have no tier** (spec §16) and are not probed.
+* **The launcher gets `PATH` only.** A rootless Docker reachable only through `DOCKER_HOST` is
+  not discoverable; the probe reports docker's failed canary and lands on bwrap. Left until a
+  deployment asks, rather than reading the environment against spec §12.
+* **Podman stays first in the ladder, unverified on the reference machine**; an operator step
+  before E2 publishes 0.1.0.
+* **`run_command_tool` takes the executor's sandbox** (spec §7, amended at D1): E2's handler
+  receives the same `TieredSandbox` instance the executor holds, so the tier the executor checked
+  is the tier the command runs under.
+* **The `isolation` marker runs where a rung exists and skips, visibly, where none does.** It is
+  not excluded by `addopts`; a skip is not a pass.
 
 ### Decided — Phase 1
 
