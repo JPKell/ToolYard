@@ -401,9 +401,9 @@ def worlds(draw: st.DrawFn, workspace: SandboxPaths) -> World:
     )
 
     tier_available = draw(st.booleans())
-    from fakes import TieredSandbox
+    from fakes import FixedTierSandbox
 
-    sandbox = TieredSandbox(IsolationTier.BWRAP) if tier_available else PathContainment()
+    sandbox = FixedTierSandbox(IsolationTier.BWRAP) if tier_available else PathContainment()
     ceiling = draw(st.sampled_from(list(EgressClass)))
     step_ns = draw(st.sampled_from([1_000, 1_000_000, 5_000_000_000]))
     store = InMemoryToolCallStore()

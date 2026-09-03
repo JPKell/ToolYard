@@ -89,6 +89,7 @@ markers = [
     "live: requires a real provider/GPU, never in default CI",
     "performance: performance budget assertions, excluded by default",
     "contract: public API/schema conformance in both directions",
+    "isolation: needs a functional isolation tier (bwrap or a container runtime) on this host; skipped where there is none",
 ]
 testpaths = ["tests"]
 

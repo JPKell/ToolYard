@@ -14,12 +14,12 @@ from fakes import (
     EchoTool,
     ExplodingSandbox,
     FixedOutputTool,
+    FixedTierSandbox,
     RaisingTool,
     RecordingTool,
     ReturningTool,
     SleepingTool,
     SteppingMonotonic,
-    TieredSandbox,
     UnrenderableError,
     spec,
 )
@@ -115,7 +115,7 @@ class TestRefusalOrder:
                 registry.register(_ladder_spec(), EchoTool())
             executor = ToolExecutor(
                 registry,
-                TieredSandbox(IsolationTier.BWRAP if tier else IsolationTier.UNAVAILABLE),
+                FixedTierSandbox(IsolationTier.BWRAP if tier else IsolationTier.UNAVAILABLE),
                 allowlist=frozenset({"escalate"}) if allowlisted else frozenset(),
                 store=store,
                 monotonic_ns=SteppingMonotonic(),
@@ -346,7 +346,7 @@ class TestEverySpecThirteenRow:
         registry = ToolRegistry()
         registry.register(spec("runner", requires_isolation=True), EchoTool())
         executor = ToolExecutor(
-            registry, TieredSandbox(IsolationTier.BWRAP), allowlist=frozenset({"runner"})
+            registry, FixedTierSandbox(IsolationTier.BWRAP), allowlist=frozenset({"runner"})
         )
         context = ToolContext(invocation_id="inv", workspace=workspace)
         result = executor.execute(ToolCallRequest(name="runner", args={"value": "x"}), context)

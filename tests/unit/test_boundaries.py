@@ -28,9 +28,19 @@ ALLOWED_IMPORTS = frozenset(
         "hashlib",
         "logging",
         "math",
+        "os",
         "pathlib",
         "re",
+        "selectors",
+        "shutil",
+        "signal",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "threading",
+        "time",
         "typing",
+        "uuid",
         # the two suite/runtime dependencies gold standards §1.1 permits
         "baseaicore",
         "jsonschema",
@@ -40,11 +50,12 @@ ALLOWED_IMPORTS = frozenset(
 )
 """Every top-level module ``src/toolyard`` may import today.
 
-Phase 2 adds ``subprocess`` (and whatever ``toolyard.sandbox`` needs to probe a tier); Phase 3 adds
-``httpx``. Both are **expected** additions to this set, made in the same commit as the import, and
-both are separately constrained by `.importlinter` to the one module allowed to hold them. What
-this list catches is the *unexpected* one: a convenience dependency arriving with no ADR, in the
-package whose non-suite runtime budget is two.
+Phase 2 added ``subprocess`` and what ``toolyard.sandbox`` needs to probe a tier and kill a process
+tree (``os``, ``selectors``, ``shutil``, ``signal``, ``sys``, ``tempfile``, ``threading``, ``time``,
+``uuid``) — standard library, every one, and ``subprocess`` is separately constrained by
+`.importlinter` to that one module. Phase 3 adds ``httpx``, the same way. What this list catches is
+the *unexpected* one: a convenience dependency arriving with no ADR, in the package whose non-suite
+runtime budget is two.
 """
 
 
@@ -88,6 +99,32 @@ class TestNoShell:
             str(path) for path in _modules() if forbidden in path.read_text(encoding="utf-8")
         ]
         assert offenders == []
+
+    def test_exactly_one_process_is_ever_started_and_it_is_the_sandbox_launcher(self) -> None:
+        """One door (ADR-0053 decision 5): every process the package starts goes through it.
+
+        `.importlinter` keeps ``subprocess`` out of every module but ``toolyard.sandbox``; this
+        pins the count *inside* that module to one, so a second launch site — a probe helper that
+        forgot the cap, a cleanup that forgot the session — cannot arrive without this failing.
+        """
+        launch_sites = [
+            f"{path.name}:{node.lineno}"
+            for path, tree in _trees()
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "Popen")
+                or (isinstance(node.func, ast.Name) and node.func.id == "Popen")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"run", "call", "check_call", "check_output"}
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "subprocess"
+                )
+            )
+        ]
+        assert len(launch_sites) == 1, launch_sites
+        assert launch_sites[0].startswith("sandbox.py:")
 
 
 class TestImportAllowlist:

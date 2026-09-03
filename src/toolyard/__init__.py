@@ -25,10 +25,11 @@ and the five checks between the second line and the third run in one fixed order
 allowlist → schema → egress → containment — reporting the **first** that fails, so a refusal is
 diagnosable from the record alone.
 
-**Status: Phase 1, unreleased.** The vocabulary, the registry, the executor's refusal order, path
-containment and the record are built and gated. The tiered isolation ladder (Phase 2) and the five
-built-in tools (Phase 3) are not here yet; ``toolyard 0.1.0`` is published at the end of Phase 3.
-Nothing in this package is on PyPI.
+**Status: Phase 2, unreleased.** The vocabulary, the registry, the executor's refusal order, path
+containment, the record, and the tiered isolation ladder — container → bwrap → refuse, probed with
+a canary and never degraded silently — are built and gated. The five built-in tools (Phase 3) are
+not here yet; ``toolyard 0.1.0`` is published at the end of Phase 3. Nothing in this package is on
+PyPI.
 """
 
 from __future__ import annotations
@@ -53,6 +54,16 @@ from toolyard.executor import (
     ToolExecutor,
 )
 from toolyard.registry import ToolRegistry
+from toolyard.sandbox import (
+    DEFAULT_CONTAINER_IMAGE,
+    DEFAULT_MAX_OUTPUT_BYTES,
+    LIMIT_NAMES,
+    PROBE_TIMEOUT_SECONDS,
+    UNLAUNCHABLE_EXIT_CODE,
+    ResourceLimits,
+    TieredSandbox,
+    TierReport,
+)
 from toolyard.store import InMemoryToolCallStore, ToolCallStore
 from toolyard.types import (
     MAX_RECORDED_NAME_CHARS,
@@ -74,16 +85,21 @@ from toolyard.types import (
 from toolyard.validation import MAX_ARGS_DEPTH, MAX_ARGS_NODES, ArgsValidator
 
 __all__ = [
+    "DEFAULT_CONTAINER_IMAGE",
     "DEFAULT_MAX_ARGS_JSON_BYTES",
     "DEFAULT_MAX_CONTENT_BYTES",
+    "DEFAULT_MAX_OUTPUT_BYTES",
     "DEFAULT_MAX_SUMMARY_BYTES",
     "DEFAULT_TIMEOUT_SECONDS",
+    "LIMIT_NAMES",
     "MAX_ARGS_DEPTH",
     "MAX_ARGS_NODES",
     "MAX_RECORDED_NAME_CHARS",
+    "PROBE_TIMEOUT_SECONDS",
     "REFUSAL_ORDER",
     "REFUSAL_REASONS",
     "TOOL_NAME_PATTERN",
+    "UNLAUNCHABLE_EXIT_CODE",
     "ArgsValidator",
     "DuplicateTool",
     "EgressClass",
@@ -95,11 +111,14 @@ __all__ = [
     "PathEscape",
     "Reason",
     "RegisteredTool",
+    "ResourceLimits",
     "RiskClass",
     "Sandbox",
     "SandboxPaths",
     "StoreFailure",
     "SubprocessResult",
+    "TierReport",
+    "TieredSandbox",
     "ToolCallRecord",
     "ToolCallRequest",
     "ToolCallStore",

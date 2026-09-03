@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from toolyard import (
@@ -25,9 +26,10 @@ from toolyard import (
     ToolOutput,
     ToolSpec,
 )
+from toolyard.sandbox import Captured
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from toolyard import SandboxPaths, ToolContext
@@ -169,11 +171,12 @@ class UnrenderableError(Exception):
 
 
 @dataclass
-class TieredSandbox:
+class FixedTierSandbox:
     """A sandbox double: real path containment, and whichever isolation tier the test wants.
 
-    Phase 1 ships no tier, so a test that needs ``isolation_tier()`` to answer anything else says so
-    here. It exercises the port exactly as Phase 2's implementation will be exercised.
+    It answers the tier it was given without probing anything, so an executor test can say "a host
+    with a tier" or "a host without" in one argument. Phase 2's real implementation is
+    :class:`toolyard.sandbox.TieredSandbox`, exercised in ``tests/unit/test_sandbox.py``.
     """
 
     tier: IsolationTier = IsolationTier.BWRAP
@@ -277,3 +280,98 @@ class SteppingMonotonic:
         current = self._now
         self._now += self._step_ns
         return current
+
+
+# -- Phase 2 doubles: the launch boundary and the probe's view of the host -------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Launch:
+    """One call the scripted runner saw: what the sandbox asked the launcher to run, and how."""
+
+    argv: tuple[str, ...]
+    env: dict[str, str]
+    timeout_seconds: float
+    max_output_bytes: int
+
+
+def captured(
+    *,
+    exit_code: int = 0,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+    timed_out: bool = False,
+    output_truncated: bool = False,
+) -> Captured:
+    """Build a :class:`~toolyard.sandbox.Captured` with a successful, silent default."""
+    return Captured(
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+        output_truncated=output_truncated,
+    )
+
+
+@dataclass
+class ScriptedRunner:
+    """A runner double: answers by the launched binary's basename, and records every launch.
+
+    ``outcomes`` is keyed three ways, most specific first. A probe's canary — recognisable by the
+    temporary workspace it binds — answers to ``"<basename> canary"`` and otherwise succeeds, so a
+    scripted *run* outcome never leaks into the probe. Any other launch answers to
+    ``"<basename> <argv[1]>"`` (``"docker run"`` versus ``"docker rm"``), then ``"<basename>"``,
+    then a silent success. An exception as an outcome is raised, which is how a launcher that cannot
+    start the binary is simulated. Nothing here starts a process: the integration suite is where
+    the real launcher runs under real tiers.
+    """
+
+    outcomes: dict[str, Captured | BaseException] = field(default_factory=dict)
+    calls: list[Launch] = field(default_factory=list)
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str],
+        timeout_seconds: float,
+        max_output_bytes: int,
+    ) -> Captured:
+        """Record the launch and answer from the script."""
+        self.calls.append(
+            Launch(
+                argv=tuple(argv),
+                env=dict(env),
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+            )
+        )
+        name = PurePosixPath(argv[0]).name
+        if any("toolyard-probe-" in item for item in argv):
+            outcome = self.outcomes.get(f"{name} canary", captured())
+        else:
+            specific = f"{name} {argv[1]}" if len(argv) > 1 else name
+            outcome = self.outcomes.get(specific, self.outcomes.get(name, captured()))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+FULL_HOST: Mapping[str, str] = {
+    "podman": "/usr/bin/podman",
+    "docker": "/usr/bin/docker",
+    "bwrap": "/usr/bin/bwrap",
+    "prlimit": "/usr/bin/prlimit",
+}
+"""A host with every rung's binary, as the probe's ``which`` would see it."""
+
+BWRAP_HOST: Mapping[str, str] = {"bwrap": "/usr/bin/bwrap", "prlimit": "/usr/bin/prlimit"}
+"""A host with no container runtime — the common deployment this package exists to serve."""
+
+DOCKER_HOST: Mapping[str, str] = {"docker": "/usr/bin/docker", "bwrap": "/usr/bin/bwrap"}
+"""A host with docker but no podman, and no prlimit."""
+
+
+def which_for(available: Mapping[str, str]) -> Callable[[str], str | None]:
+    """An executable lookup that sees exactly ``available`` — the probe's injected view."""
+    return lambda name: available.get(name)
