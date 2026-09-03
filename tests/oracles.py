@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 LADDER = (
     ("name_is_registered", "unknown_tool"),
     ("name_is_allowlisted", "not_allowlisted"),
-    ("name_is_approved", "not_in_intent"),
+    ("name_is_approved", "not_approved"),
     ("args_are_valid", "args_invalid"),
     ("egress_permitted", "egress_not_permitted"),
     ("tier_available", "isolation_unavailable"),

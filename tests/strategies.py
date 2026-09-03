@@ -97,7 +97,7 @@ REGISTERED = "registered_tool"
 """Registered, allowlisted and approved: the name that gets as far as the handler."""
 
 ALLOWLISTED_ONLY = "allowlisted_only"
-"""Registered and allowlisted, never in an intent: reaches ``not_in_intent``."""
+"""Registered and allowlisted, never approved: reaches ``not_approved``."""
 
 REGISTERED_ONLY = "registered_only"
 """Registered and never allowlisted: reaches ``not_allowlisted``."""

@@ -150,22 +150,25 @@ def _check_registry(state: _Pass) -> _Refusal | None:
 
 
 def _check_allowlist(state: _Pass) -> _Refusal | None:
-    """Check 2 — the tool is callable in this trajectory, and approved for this turn.
+    """Check 2 — the tool is callable in this trajectory, and approved for this invocation.
 
-    Two refusals, in that order, because they mean different things to the application
-    (PromptCadence lifecycle §5, the ``undeclared_tool`` row). Outside the *trajectory allowlist* is
-    ``not_allowlisted`` and is never re-approvable: the allowlist is the caller's, not the model's.
-    Outside the *turn's* approved set is ``not_in_intent``, which is a drift the application may
-    resolve by minting a superseding intent (ADR-0056 §3) and retrying. Reporting the trajectory
-    refusal first matters: telling a model its call merely needs approval, when no approval could
-    ever grant it, invites a re-approval that can only fail.
+    Two refusals, in that order, because they mean different things to the application. Outside the
+    *trajectory allowlist* is ``not_allowlisted`` and is never re-approvable: the allowlist is the
+    caller's, not the model's. Outside this *invocation's* approved set is ``not_approved``, which
+    is a drift the application may resolve by approving a superseding set and retrying. Reporting
+    the trajectory refusal first matters: telling a model its call merely needs approval, when no
+    approval could ever grant it, invites a re-approval that can only fail.
+
+    The distinction is ToolYard's and holds for any consumer; a consumer maps each reason onto its
+    own category — PromptCadence onto the ``undeclared_tool`` row of lifecycle §5, resolving the
+    second by minting a superseding intent revision (ADR-0056 §3).
     """
     name = state.request.name
     if name not in state.allowlist:
         return _Refusal(Reason.NOT_ALLOWLISTED, "the tool is not callable in this trajectory")
     approved = state.context.approved_tools
     if approved is not None and name not in approved:
-        return _Refusal(Reason.NOT_IN_INTENT, "the tool is not approved for this turn")
+        return _Refusal(Reason.NOT_APPROVED, "the tool is not approved for this invocation")
     return None
 
 

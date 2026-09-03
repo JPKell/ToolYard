@@ -194,7 +194,7 @@ class TestRefusalOrder:
         expected = [
             Reason.UNKNOWN_TOOL,
             Reason.NOT_ALLOWLISTED,
-            Reason.NOT_IN_INTENT,
+            Reason.NOT_APPROVED,
             Reason.ARGS_INVALID,
             Reason.EGRESS_NOT_PERMITTED,
             Reason.ISOLATION_UNAVAILABLE,
@@ -271,9 +271,9 @@ class TestEverySpecThirteenRow:
             invocation_id="inv", workspace=workspace, approved_tools=frozenset({"other"})
         )
         result = executor.execute(ToolCallRequest(name="echo", args={"value": "x"}), context)
-        assert result.reason == Reason.NOT_IN_INTENT.value
+        assert result.reason == Reason.NOT_APPROVED.value
 
-    def test_an_absent_intent_leaves_the_trajectory_allowlist_standing_alone(
+    def test_an_absent_approved_set_leaves_the_trajectory_allowlist_standing_alone(
         self, executor: ToolExecutor, context: ToolContext
     ) -> None:
         result = executor.execute(ToolCallRequest(name="echo", args={"value": "x"}), context)
@@ -591,7 +591,7 @@ class TestRefusalTextIsPromptSurface:
             invocation_id="inv", workspace=workspace, approved_tools=frozenset({"echo"})
         )
         result = executor.execute(ToolCallRequest(name="secret_tool", args={"value": "x"}), context)
-        assert result.reason == Reason.NOT_IN_INTENT.value
+        assert result.reason == Reason.NOT_APPROVED.value
         assert "echo" not in result.content.replace("secret_tool", "")
 
     def test_a_path_escape_names_the_roots_role_to_the_model_and_its_path_to_the_record(

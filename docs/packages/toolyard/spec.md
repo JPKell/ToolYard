@@ -72,6 +72,10 @@ external harness wanting the same discipline.
 ```python
 class RiskClass(Enum):   READ_ONLY = "read_only";  MUTATING = "mutating"
 class EgressClass(Enum): NONE = "none";            NETWORK = "network"
+class PathAccess(Enum):  READ = "read";            WRITE = "write"
+# RiskClass and EgressClass are ordered ceilings, not flat sets: a caller states a maximum and a
+# rank comparison admits everything at or below it, so a third class changes no call site.
+# EgressClass.permits(required) answers "does this ceiling admit a tool declaring `required`".
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
@@ -82,17 +86,27 @@ class ToolSpec:
     risk_class: RiskClass
     egress: EgressClass
     redact_args: bool = False          # record stores sha256 only
+    path_args: Mapping[str, PathAccess] = {}   # top-level string args that are paths, and the
+                                       # root each is checked against (§11.3)
+    requires_isolation: bool = False   # handler must run under Sandbox.run_isolated (§11.4)
     def wire_definition(self) -> Mapping[str, Any]: ...   # name+description+args schema, neutral
+    # Validated on construction rather than at registration, so a half-checked spec cannot be
+    # passed around. `args_schema` must be closed at every object-typed subschema carrying
+    # `properties`, and must not use the `$ref` family (§14); either failure raises
+    # InvalidToolSpec naming the failing path.
 
 class ToolHandler(Protocol):
     def execute(self, args: Mapping[str, Any], context: ToolContext) -> ToolOutput: ...
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:                     # injected per invocation by the application
-    invocation_id: str
+    invocation_id: str                 # the application's, never the model's
     workspace: SandboxPaths            # write_root + read_roots for this trajectory/stage
-    timeout_seconds: float
+    timeout_seconds: float | None      # None ⇒ the executor's default (§11.8)
     clock: Clock                       # injected, for determinism in tests
+    approved_tools: frozenset[str] | None = None   # this invocation's approved set; None ⇒ the
+                                       # trajectory allowlist stands alone (§11.2)
+    max_egress: EgressClass = EgressClass.NONE     # per-invocation ceiling; defaults closed
 
 class ToolRegistry:
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None: ...   # duplicate name raises
@@ -106,14 +120,25 @@ class SandboxPaths:
     write_root: Path
     read_roots: tuple[Path, ...] = ()
 
-class Sandbox:
+class Sandbox(Protocol):               # a port: the executor depends on it, a phase supplies it
     def resolve_read(self, candidate: str, paths: SandboxPaths) -> Path: ...    # or PathEscape
     def resolve_write(self, candidate: str, paths: SandboxPaths) -> Path: ...
     def isolation_tier(self) -> IsolationTier: ...    # CONTAINER | BWRAP | UNAVAILABLE
     def run_isolated(self, argv: Sequence[str], *, paths: SandboxPaths,
-                     timeout_seconds: float, env: Mapping[str, str] = …,
+                     timeout_seconds: float, env: Mapping[str, str] | None = None,
                      network: bool = False) -> SubprocessResult: ...
     # tier UNAVAILABLE ⇒ refusal, never an unisolated run (ADR-0018's rule, verbatim)
+    # env None ⇒ the EMPTY allowlist, never os.environ (§14)
+
+@dataclass(frozen=True, slots=True)
+class SubprocessResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_ms: int
+    tier: IsolationTier                # which rung of the ladder actually ran it
+    timed_out: bool                    # the process tree was killed for exceeding its limit
+    limits_unenforced: tuple[str, ...] = ()   # limits this platform could not apply (ADR-0016)
 
 class ToolExecutor:
     def __init__(self, registry: ToolRegistry, sandbox: Sandbox, *,
@@ -122,14 +147,17 @@ class ToolExecutor:
     # order: name in registry → name in allowlist → args validate → egress permitted for this
     # spec → handler inside containment → result summarized + recorded. The first failure
     # produces a REFUSED result naming the check; a handler exception produces FAILED with the
-    # error class, never a raise.
+    # error class, never a raise. The allowlist rung has two outcomes (§11.2); containment
+    # checks isolation before paths (§11.4).
 
 @dataclass(frozen=True, slots=True)
 class ToolResult:
     invocation_id: str
     status: ToolStatus                 # OK | REFUSED | FAILED | TIMEOUT
     content: str                       # what the model sees (size-capped, labelled if truncated)
-    reason: str | None                 # for REFUSED/FAILED, machine-readable
+    reason: str | None                 # for REFUSED/FAILED, machine-readable; a Reason value
+    reason_detail: str | None = None   # the detail §13's rows require: root and target, validator
+                                       # paths, exception class, elapsed against the limit
     duration_ms: int
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +167,8 @@ class ToolCallRecord:                  # what the store persists
     args_json: str | None              # None when redact_args; args_sha256 always present
     args_sha256: str
     status: ToolStatus
+    reason: str | None                 # §11.2: a refusal is diagnosable from the record alone
+    reason_detail: str | None
     result_summary: str                # capped; full oversize output is the app's artifact
     result_sha256: str
     duration_ms: int
@@ -156,6 +186,12 @@ list_dir_tool()       # READ_ONLY, NONE
 run_command_tool()    # MUTATING,  NONE  — argv form only (never a shell string), isolated per tier
 http_fetch_tool(allowed_hosts: Sequence[str], *, max_bytes: int = 8_388_608)
                       # READ_ONLY, NETWORK — ADR-0026 §3 checks before and during the fetch
+
+# The closed set of machine-readable reasons a non-OK result carries (§13). A consumer maps each
+# onto its own deviation category, so a reason nobody enumerated has no defined disposition:
+# adding one is a MINOR change (§19) and a change consumers must be told about.
+class Reason(StrEnum): ...   # exactly the reason values named in §13
+REFUSAL_REASONS: Final[frozenset[str]]
 
 # Errors (subclass baseaicore.SuiteError; raised only for CALLER bugs, never for model input)
 ToolYardError            TOOLYARD_ERROR
@@ -187,11 +223,35 @@ retention; oversize outputs go to the application's artifact directory, referenc
    asserts no exception escapes.
 2. **Refusal order is fixed and recorded**: registry → allowlist → schema → egress → containment.
    The reason names the first failed check, so a refusal is diagnosable from the record alone.
+   The allowlist rung has **two outcomes**: `not_allowlisted` for a name outside the trajectory
+   allowlist, never re-approvable because that allowlist is the caller's; and `not_approved` for a
+   name inside it but outside this invocation's `approved_tools`, which the application can
+   resolve by approving a superseding set and retrying. The trajectory refusal is reported first —
+   telling a model its call merely needs approval, when no approval could ever grant it, invites a
+   re-approval that can only fail. The effective set is the **intersection** of the two and can
+   therefore only narrow: an intersection has no widening case to get wrong. A call outside the
+   turn's set is refused rather than allowed and reported afterwards, so the side effect has not
+   happened and a scoped re-approval can still grant it.
 3. **Containment is resolution-then-check**: every path is fully resolved (symlinks, `..`,
    relative components) before comparison against the roots; write containment and read
-   containment are separate checks against separate roots.
-4. **Isolation never degrades silently**: `run_command` on a host with no container and no bwrap
-   refuses with `isolation_unavailable` — the ADR-0018 rule, applied to tools.
+   containment are separate checks against separate roots. Comparison is by **path ancestry**,
+   never by string prefix, so `/data` and `/database` are two roots; a relative candidate resolves
+   against `write_root` and never the process working directory, which is wherever the application
+   happened to start. The executor resolves every argument a spec declares in `path_args` **before
+   the handler runs, and substitutes the resolved path into the arguments the handler receives**,
+   so a handler operates on a resolved path and never re-resolves a candidate — resolution-then-
+   check and the TOCTOU mitigation in one move. Only top-level arguments the schema types as
+   `string` may be declared; a nested path argument is deliberately not expressible, because an
+   argument the executor cannot see is one it cannot contain.
+4. **Isolation never degrades silently**: any tool declaring `requires_isolation` — `run_command`
+   among them — refuses with `isolation_unavailable` on a host with no container and no bwrap,
+   rather than running unisolated. That is the ADR-0018 rule applied to tools, and it is a property
+   of the executor rather than of one built-in. Containment checks isolation **before** paths, so a
+   tool that cannot run at all on this host is refused before its arguments are resolved and a
+   model is told the unfixable fact first. `requires_isolation` is a declaration, and it is
+   **load-bearing**: ToolYard cannot detect a handler that reaches a subprocess without declaring
+   it, and the no-`shell=True` test greps this package's own source, not application-supplied
+   handlers.
 5. **`http_fetch` performs the ADR-0026 §3 checks itself** — scheme http/https, host in the
    caller's allowlist (loopback only when empty), literal-IP comparison after DNS resolution,
    re-checking on every redirect hop, size cap enforced during streaming — so no consumer can
@@ -206,28 +266,60 @@ retention; oversize outputs go to the application's artifact directory, referenc
 
 Constructor arguments only — roots, allowlists, caps, timeouts. ToolYard reads no environment and
 no files (the isolation-tier probe inspects the host for container/bwrap availability; it is a
-probe, not configuration).
+probe, not configuration). Every cap is validated at construction, so a misconfigured executor
+fails at startup rather than on the one call that overflowed.
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `DEFAULT_TIMEOUT_SECONDS` | `30.0` | Applied when `ToolContext.timeout_seconds` is `None` |
+| `DEFAULT_MAX_CONTENT_BYTES` | `65_536` | What the model sees, UTF-8 bytes |
+| `DEFAULT_MAX_SUMMARY_BYTES` | `4_096` | What the record holds — a row, not an artifact |
+| `DEFAULT_MAX_ARGS_JSON_BYTES` | `16_384` | Above this, `args_json` becomes a size-and-digest object |
+| `MIN_CONTENT_BYTES` | `256` | Floor for any configured cap, so a truncation label always fits |
+
+`TRUNCATION_LABEL_TEMPLATE` is part of the contract rather than a formatting detail. The guarantee
+is on the **returned** string — never larger than the cap, label included — truncation cuts on a
+character boundary, and the label states both byte figures, because a model that assumes a result
+*ended* rather than *stopped* will answer from half a file.
 
 ## 13. Error behaviour
 
 | Condition | `ToolResult.status` / reason |
 |---|---|
 | Tool not in registry | `REFUSED` / `unknown_tool` |
-| Tool not in the invocation allowlist | `REFUSED` / `not_allowlisted` |
+| Tool outside the trajectory allowlist | `REFUSED` / `not_allowlisted` — never re-approvable |
+| Tool inside it, outside this invocation's `approved_tools` | `REFUSED` / `not_approved` — the application may approve a superseding set and retry |
 | Arguments fail schema validation | `REFUSED` / `args_invalid`, with the validator's paths |
 | Path escapes containment (after resolution) | `REFUSED` / `path_escape`, naming root and target |
 | Egress tool where egress is not permitted | `REFUSED` / `egress_not_permitted` |
-| No isolation tier for `run_command` | `REFUSED` / `isolation_unavailable` |
+| No isolation tier for a tool declaring `requires_isolation` | `REFUSED` / `isolation_unavailable` |
 | Fetch host/scheme/redirect/size violation | `REFUSED` / the specific ADR-0026 check |
 | Handler exception | `FAILED` / exception class name (message capped, no traceback to the model) |
 | Timeout | `TIMEOUT` / elapsed and limit |
 | Output over the size cap | `OK` with truncated, labelled content; full output hash recorded |
+
+`reason` is a value from the closed `Reason` set. The detail several rows above call for — the
+validator's paths, the root and target of an escape, the exception class, elapsed against the limit
+— travels in `reason_detail`, on the result **and** on the record: a closed reason set cannot carry
+it, and §11.2 requires a refusal to be diagnosable from the record alone. A `TIMEOUT` discards the
+handler's output rather than returning it, because a result the executor has declared timed out
+must not reach the model as though it had not.
 
 ## 14. Security considerations
 
 * Threat model: the arguments are attacker-controlled (prompt injection is assumed); tool results
   fed back to the model are attacker-influencing. ToolYard's job is that neither can reach the
   filesystem outside containment, the network outside the allowlist, or a shell.
+* **Tool argument schemas may not use the `$ref` family** — `$ref`, `$dynamicRef`, `$id`,
+  `$anchor`, `$dynamicAnchor`, `$defs`, `definitions` — refused when a `ToolSpec` is constructed.
+  A `$ref` is a URI, and a validator handed an unresolved one attempts to **retrieve** it: an
+  outbound fetch originating in a tool declaration, inside the package whose whole purpose is that
+  egress passes one checked door. Refusing the keyword removes the door rather than guarding it.
+  Format checking is left off for the same reason — a `format: "uri"` checker is another parser
+  running on model-influenced input, and the checks that matter for a URL belong at the socket
+  ([ADR-0026 §3](../../adr/0026-local-http-hardening.md)). Schemas must also be closed
+  at every object-typed subschema carrying `properties`, so an argument nobody declared is refused
+  rather than passed to a handler.
 * `run_command` takes argv, never a shell string; no `shell=True` anywhere in the package (a test
   greps for it); environment passed to the child is an explicit allowlist, never `os.environ`.
 * The bwrap tier unshares user/pid/net namespaces (network only for tools declaring `NETWORK`,

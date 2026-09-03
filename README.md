@@ -115,7 +115,7 @@ are not a complete sequence. A request that fails every check is walked down all
 |---|---|---|
 | `unknown_tool` | registry | No tool of exactly that name. Lookup is exact: no fuzzy match, no case folding, no aliasing |
 | `not_allowlisted` | allowlist | Outside the trajectory allowlist. **Never re-approvable** — the allowlist is the caller's |
-| `not_in_intent` | allowlist | Inside the trajectory allowlist, outside this turn's approved set. The application's drift to resolve |
+| `not_approved` | allowlist | Inside the trajectory allowlist, outside this invocation's approved set. The application's drift to resolve |
 | `args_invalid` | schema | With the validator's JSON paths, so a model can see *which* argument was wrong |
 | `egress_not_permitted` | egress | The tool reaches the network; this invocation's ceiling does not allow it |
 | `isolation_unavailable` | containment | The tool needs a subprocess and this host has no tier. ADR-0018's floor, never an unisolated run |

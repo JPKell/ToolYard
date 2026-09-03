@@ -175,8 +175,8 @@ class Reason(StrEnum):
     NOT_ALLOWLISTED = "not_allowlisted"
     """Outside the trajectory allowlist. Never re-approvable: the allowlist is the caller's."""
 
-    NOT_IN_INTENT = "not_in_intent"
-    """Inside the trajectory allowlist but outside this turn's approved set. The app's drift."""
+    NOT_APPROVED = "not_approved"
+    """Inside the trajectory allowlist, outside this invocation's approved set. The app's drift."""
 
     ARGS_INVALID = "args_invalid"
     """The arguments failed the schema. The detail names the paths."""
@@ -403,11 +403,13 @@ class ToolContext:
         timeout_seconds: The handler's limit. ``None`` means the executor's configured default,
             **never** "no timeout" (spec §11.8) — there is no way to express an unlimited call, and
             that is deliberate.
-        approved_tools: This turn's approved subset, from the ``ExecutionIntent``
-            (ADR-0056 §1). It can only **narrow**: the effective allowlist is the intersection of
-            this and the executor's trajectory allowlist, so a value that arrived from anywhere
-            untrustworthy still cannot widen what is callable. ``None`` means "the trajectory
-            allowlist stands alone", for a caller that has no per-turn intent.
+        approved_tools: The subset approved for this invocation. It can only **narrow**: the
+            effective allowlist is the intersection of this and the executor's trajectory
+            allowlist, so a value that arrived from anywhere untrustworthy still cannot widen what
+            is callable. ``None`` means "the trajectory allowlist stands alone", for a caller with
+            no per-invocation narrowing. A consumer that mints one per turn supplies it from there
+            — PromptCadence from its ``ExecutionIntent`` (ADR-0056 §1) — but this field is a set of
+            names and knows nothing about where they came from.
         max_egress: The egress ceiling for this invocation, defaulting to
             :attr:`EgressClass.NONE`. A caller who has not decided gets the answer that cannot leak.
         clock: The wall clock, injected, used only for ``started_at``. Durations do **not** come

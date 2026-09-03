@@ -42,10 +42,12 @@ Phase 3, with the built-in tools.
 Four shapes spec §7 left under-determined were settled this phase and are recorded in
 `C2_HANDOFF.md` for the phases that follow:
 
-* **The allowlist narrows and never widens.** The trajectory allowlist is the executor's; a turn's
-  `ExecutionIntent` narrows it through `ToolContext.approved_tools`, and the effective set is the
-  intersection. A new refusal reason, `not_in_intent`, distinguishes the re-approvable drift from
-  `not_allowlisted`, which never is.
+* **The allowlist narrows and never widens.** The trajectory allowlist is the executor's; a
+  per-invocation set narrows it through `ToolContext.approved_tools`, and the effective set is the
+  intersection. A new refusal reason, `not_approved`, distinguishes the re-approvable drift from
+  `not_allowlisted`, which never is. A consumer that mints an approved set per turn supplies it
+  from there (PromptCadence from its `ExecutionIntent`), but the field is a set of names and the
+  reason names no consumer's concept.
 * **Egress is a per-invocation ceiling** — `ToolContext.max_egress`, defaulting to
   `EgressClass.NONE`. Closed, like every default here.
 * **The sandbox is a port the executor depends on**, with an honest Phase-1 implementation:
