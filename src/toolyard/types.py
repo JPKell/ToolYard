@@ -158,12 +158,13 @@ class ToolStatus(StrEnum):
 class Reason(StrEnum):
     """The closed set of machine-readable reasons a non-``OK`` result can carry.
 
-    Closed on purpose. PromptCadence maps a reason onto a deviation category
-    ([lifecycle §5](https://github.com/JPKell/PromptCadence)), and a category nobody enumerated has
-    no defined disposition — so an unrecognized reason string is a bug in this package, and a
-    property test asserts none is ever produced. Adding a reason is a **minor** version change
-    (spec §19) and a change PromptCadence must be told about; it is not a thing to do casually in a
-    handler.
+    Closed on purpose. A consumer maps a reason onto its own deviation category — PromptCadence
+    onto the ``undeclared_tool`` row of
+    ([lifecycle §5](https://github.com/JPKell/OpenWeight-Gym/blob/main/apps/promptcadence/lifecycle.md#5-deviation-handling))
+    — and a category nobody enumerated has no defined disposition, so an unrecognized reason string
+    is a bug in this package and a property test asserts none is ever produced. Adding a reason is
+    a **minor** version change (spec §19) and a change consumers must be told about; it is not a
+    thing to do casually in a handler.
 
     Human detail belongs in :attr:`ToolResult.reason_detail` and in the content the model reads,
     never in this field.

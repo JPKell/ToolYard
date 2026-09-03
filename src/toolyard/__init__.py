@@ -6,7 +6,7 @@ exception**. A tool that does not exist, a name outside the allowlist, arguments
 schema, a path that escapes its root, a handler that raises, a call that runs long — every one of
 those returns a :class:`~toolyard.types.ToolResult` with a status and a machine-readable reason.
 Exceptions are for caller bugs: a duplicate registration, an invalid spec, a broken store
-([ADR-0053](https://github.com/JPKell/ToolYard)).
+([ADR-0053](https://github.com/JPKell/OpenWeight-Gym/blob/main/adr/0053-a-refused-tool-call-is-a-result-not-an-exception.md)).
 
 The shape is register → execute → record::
 

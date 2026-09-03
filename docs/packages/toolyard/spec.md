@@ -70,9 +70,9 @@ external harness wanting the same discipline.
 ## 7. Public API
 
 ```python
-class RiskClass(Enum):   READ_ONLY = "read_only";  MUTATING = "mutating"
-class EgressClass(Enum): NONE = "none";            NETWORK = "network"
-class PathAccess(Enum):  READ = "read";            WRITE = "write"
+class RiskClass(StrEnum):   READ_ONLY = "read_only";  MUTATING = "mutating"
+class EgressClass(StrEnum): NONE = "none";            NETWORK = "network"
+class PathAccess(StrEnum):  READ = "read";            WRITE = "write"
 # RiskClass and EgressClass are ordered ceilings, not flat sets: a caller states a maximum and a
 # rank comparison admits everything at or below it, so a third class changes no call site.
 # EgressClass.permits(required) answers "does this ceiling admit a tool declaring `required`".
