@@ -5,11 +5,11 @@ place in the suite that runs a real, side-effecting operation on a model's behal
 place the discipline lives: schema validation, allowlisting, path containment, tiered subprocess
 isolation, egress-checked fetching, structured refusals, and a persisted record of every call.
 
-**Status: Phase 1, unreleased.** The vocabulary, the registry, the executor's fixed refusal order,
-path containment and the record are built and gated. The isolation ladder is Phase 2; the five
-built-in tools (`read_file`, `write_file`, `list_dir`, `run_command`, `http_fetch`) are Phase 3,
-which is when `toolyard 0.1.0` is published. Nothing here is on PyPI yet, and the only tools in this
-repository today are harmless fakes under `tests/`.
+**Status: Phase 2, unreleased.** The vocabulary, the registry, the executor's fixed refusal order,
+path containment, the record, and the isolation ladder — container → bwrap → refuse — are built and
+gated. The five built-in tools (`read_file`, `write_file`, `list_dir`, `run_command`, `http_fetch`)
+are Phase 3, which is when `toolyard 0.1.0` is published. Nothing here is on PyPI yet, and the only
+tools in this repository today are harmless fakes under `tests/`.
 
 * Import name and distribution name: `toolyard`
 * Runtime dependencies: `baseaicore`, `jsonschema` — and `httpx` from Phase 3
@@ -136,7 +136,60 @@ are not a complete sequence. A request that fails every check is walked down all
 | **Containment is resolution-then-check** | Fully resolved — symlinks, `..`, relative parts — *then* compared by path ancestry, so `/data` and `/database` are two roots |
 | **Refusal text is prompt surface** | A reason names the failed check; never the allowlist's members and never a containment root's path |
 | **Wire definitions are byte-stable** | Fixed key set, deep-copied schema, sorted export order — because PromptCadence hashes them into turn records |
-| **No `shell=True`, anywhere** | A grep test over `src/` says so, and it was written in Phase 1 so Phase 2 finds it already failing |
+| **No `shell=True`, anywhere** | An AST test over `src/` says so, and a second one pins the package to exactly one process-launch site |
+| **Isolation never degrades silently** | Container → bwrap → refuse, each rung proven by running its real argv around `/bin/true`. No tier means `isolation_unavailable`, never an unisolated run — and a rung that fails after it was decided raises rather than degrading |
+| **The child environment is an allowlist** | `env=None` is the empty mapping, never `os.environ`; the sandbox binary itself is launched with `PATH` alone |
+| **A limit is enforced or reported** | CPU time, memory, file size and process count, applied inside the sandbox; whatever a rung cannot apply is named in `limits_unenforced` (ADR-0016) |
+
+## Isolation: container → bwrap → refuse
+
+`TieredSandbox` is the Phase-2 implementation of the `Sandbox` port. It composes `PathContainment`
+for the path half and adds the ADR-0018 ladder for commands:
+
+```python
+from pathlib import Path
+
+from toolyard import ResourceLimits, SandboxPaths, TieredSandbox
+
+sandbox = TieredSandbox(limits=ResourceLimits(cpu_seconds=30, memory_bytes=512 << 20))
+report = sandbox.report()  # probes once, caches; show this in your `doctor` command
+report.tier  # IsolationTier.CONTAINER | BWRAP | UNAVAILABLE
+report.reason  # every rung visited, in order, and why each was skipped or taken
+report.limits_unenforced  # () here; the names of any limit this rung could not apply
+
+outcome = sandbox.run_isolated(
+    ["python3", "-c", "print('hello')"],
+    paths=SandboxPaths(write_root=Path("/srv/work")),
+    timeout_seconds=10.0,
+    env={"PATH": "/usr/bin:/bin"},  # the allowlist; None means *nothing*, never os.environ
+)
+outcome.exit_code, outcome.stdout, outcome.tier, outcome.timed_out, outcome.limits_unenforced
+```
+
+* **The probe executes a canary.** Each rung is proven by running the exact argv `run_isolated`
+  would build — same flags, same limits, a temporary workspace bound the same way — around
+  `/bin/true`. A `bwrap` that cannot create namespaces, a container daemon that is down, or an image
+  that was never pulled each fail their canary and are reported with the reason. The container rung
+  uses `--pull=never`, so a probe never reaches the network.
+* **Forcing a lower rung** is done by shaping the probe's view, never by mutating the host:
+  `TieredSandbox(which=lambda name: None if name in ("podman", "docker") else shutil.which(name))`
+  makes bwrap the top of the ladder. There is no way to force a rung *above* what the probe found,
+  and no rung below refusal.
+* **What a command sees.** The write root read-write and the read roots read-only, bound in place
+  and nothing else from the host beyond the minimal runtime (`/usr`, `/bin`, `/sbin`, `/lib`,
+  `/lib64` and six named `/etc` entries); a private `/tmp`, `/proc` and `/dev`; no network unless
+  the caller passes `network=True`, which only a tool declaring `NETWORK` may; the environment the
+  caller named and nothing else.
+* **Timeouts kill the tree**, output bombs are capped and killed with the truncation label on the
+  text, and a `run_command`-style tool must declare `requires_isolation` — the executor refuses it
+  before any handler runs on a host with no tier, and ToolYard cannot detect a handler that reaches
+  for a subprocess without declaring it.
+* **Linux only.** macOS and Windows have no tier and are not probed (spec §16); every other tool
+  works there.
+
+The marked suite, `pytest -m isolation`, runs both rungs for real and skips loudly where one is not
+available. It needs `python3` on the host for the bwrap rung and the image (`python:3.12-slim` by
+default) pulled locally for the container rung.
 
 ## Development
 
