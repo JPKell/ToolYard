@@ -30,6 +30,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
+from baseaicore import ValidationError
+
 from toolyard._safe import clean_text
 from toolyard.errors import ToolYardError
 
@@ -96,15 +98,58 @@ class SandboxPaths:
     "may this tool read the file it is about to overwrite" and "may this tool write into the
     directory it was allowed to read" the same check, and they are not.
 
+    Validated on construction, because every field is the application's (spec §7, amended at D1):
+    a root must be absolute, and no root may equal or contain another. A relative root would make
+    containment resolve against the process working directory — the thing §11.3 forbids for a
+    candidate, reached through configuration instead. Overlapping roots would make the path half
+    and the subprocess half disagree: containment's ancestry rule would let a ``WRITE`` argument
+    land inside a read root nested in the write root, while the sandbox binds that read root
+    read-only. The comparison is lexical, on the roots as declared; a symlinked alias of another
+    root is deduplicated by the sandbox when it binds.
+
     Attributes:
         write_root: The one directory a ``WRITE`` path argument may resolve inside. Also readable.
         read_roots: Additional directories a ``READ`` path argument may resolve inside. Empty by
             default, which means "the write root and nothing else" — closed, like every default in
-            this package.
+            this package. A list is accepted and stored as a tuple.
     """
 
     write_root: Path
     read_roots: tuple[Path, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Refuse a root that is not an absolute :class:`~pathlib.Path`, or roots that overlap.
+
+        Raises:
+            ValidationError: If ``write_root`` or any read root is not a ``Path``, is relative, or
+                is equal to or an ancestor of another root. Caller bugs, raised where the workspace
+                is built rather than on the one call that reached the overlapping directory.
+        """
+        if not isinstance(self.read_roots, tuple | list):
+            raise ValidationError(
+                "SandboxPaths.read_roots must be a tuple of absolute Paths; got "
+                f"{type(self.read_roots).__name__}.",
+                details={"field": "read_roots"},
+            )
+        roots: tuple[Path, ...] = (self.write_root, *self.read_roots)
+        for root in roots:
+            if not isinstance(root, Path) or not root.is_absolute():
+                raise ValidationError(
+                    f"Every SandboxPaths root must be an absolute Path; got {root!r}. A relative "
+                    "root would resolve against the process working directory, which is wherever "
+                    "the application happened to start (spec §11.3).",
+                    details={"field": "write_root" if root is self.write_root else "read_roots"},
+                )
+        for index, root in enumerate(roots):
+            for other in roots[index + 1 :]:
+                if root == other or root in other.parents or other in root.parents:
+                    raise ValidationError(
+                        f"SandboxPaths roots must not overlap: {str(root)!r} and {str(other)!r}. "
+                        "A read root inside the write root (or the reverse) is a workspace whose "
+                        "two containment halves would disagree; declare one of them.",
+                        details={"field": "read_roots"},
+                    )
+        object.__setattr__(self, "read_roots", tuple(self.read_roots))
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +169,10 @@ class SubprocessResult:
             assumed. An empty tuple means every declared limit was applied; it never means "no
             limits were asked for", which is what a ``None`` here would have been unable to
             distinguish.
+        output_truncated: A stream hit the runner's cap: reading stopped, the process tree was
+            killed, and the text carries the truncation label. Distinct from ``timed_out`` because
+            a consumer should say which happened rather than infer it from a label and a signal
+            exit code (spec §7, amended at D1).
     """
 
     exit_code: int
@@ -133,6 +182,7 @@ class SubprocessResult:
     tier: IsolationTier
     timed_out: bool = False
     limits_unenforced: tuple[str, ...] = ()
+    output_truncated: bool = False
 
 
 class PathEscape(Exception):
@@ -234,9 +284,10 @@ class Sandbox(Protocol):
             env: An explicit allowlist of environment variables. ``None`` means the empty mapping —
                 never ``os.environ``, which would hand a child every credential the application
                 holds (ADR-0053 decision 5).
-            network: Whether the child may reach the network. Only tools declaring
-                :attr:`~toolyard.types.EgressClass.NETWORK` may pass ``True``, and ``run_command``
-                never does in v1.
+            network: Whether the child may reach the network. **Refused in v1** by the shipped
+                implementation: no tool runs a subprocess with network, and a door with no consumer
+                stays shut until one is named (spec §14). The parameter stays on the port so that
+                naming one is a one-line change rather than a signature change.
 
         Returns:
             What the child did, with the tier that ran it recorded on the result.

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from baseaicore import ValidationError
 
 from fakes import ScriptedRunner, which_for
 from toolyard import (
@@ -258,3 +259,66 @@ class TestTheTieredSandboxKeepsTheFloor:
             if not name.startswith("_")
             and any(word in name for word in ("skip", "unsafe", "widen", "allow", "host"))
         ]
+
+
+class TestSandboxPathsAreValidatedAtConstruction:
+    """Spec §7 (amended at D1): roots are absolute and do not overlap, or the workspace raises.
+
+    Every field of ``SandboxPaths`` is the application's, so a bad one is a caller bug surfaced
+    where the workspace is built — not on the one call that reached the overlapping directory.
+    """
+
+    def test_a_relative_root_is_refused(self) -> None:
+        """A relative root would resolve against the process CWD, which spec §11.3 forbids."""
+        with pytest.raises(ValidationError, match="absolute"):
+            SandboxPaths(write_root=Path("work"))
+        with pytest.raises(ValidationError, match="absolute"):
+            SandboxPaths(write_root=Path("/srv/work"), read_roots=(Path("reference"),))
+
+    def test_a_root_that_is_not_a_path_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="absolute"):
+            SandboxPaths(write_root="/srv/work")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="read_roots"):
+            SandboxPaths(write_root=Path("/srv/work"), read_roots="/srv/reference")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("write_root", "read_roots"),
+        [
+            ("/srv/work", ("/srv/work",)),
+            ("/srv/work", ("/srv/work/reference",)),
+            ("/srv/project/out", ("/srv/project",)),
+            ("/srv/work", ("/srv/reference", "/srv/reference")),
+            ("/srv/work", ("/srv/reference", "/srv/reference/sub")),
+            ("/", ("/srv/reference",)),
+        ],
+        ids=[
+            "equal",
+            "read-inside-write",
+            "write-inside-read",
+            "repeated",
+            "read-inside-read",
+            "root-of-everything",
+        ],
+    )
+    def test_overlapping_roots_are_refused(
+        self, write_root: str, read_roots: tuple[str, ...]
+    ) -> None:
+        with pytest.raises(ValidationError, match="overlap"):
+            SandboxPaths(
+                write_root=Path(write_root), read_roots=tuple(Path(root) for root in read_roots)
+            )
+
+    def test_a_string_prefix_is_not_an_overlap_and_a_list_is_accepted(self) -> None:
+        """``/data`` and ``/database`` are two roots here as everywhere else."""
+        paths = SandboxPaths(
+            write_root=Path("/srv/data"),
+            read_roots=[Path("/srv/database")],  # type: ignore[arg-type]  # a list is accepted and stored as a tuple
+        )
+        assert paths.read_roots == (Path("/srv/database"),)
+
+    def test_the_comparison_is_lexical_and_touches_no_filesystem(self, tmp_path: Path) -> None:
+        """Nothing is resolved at construction; roots need not exist yet."""
+        never = tmp_path / "never-created"
+        paths = SandboxPaths(write_root=never, read_roots=(tmp_path / "also-never",))
+        assert paths.write_root == never
+        assert not never.exists()

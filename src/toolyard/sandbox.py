@@ -19,17 +19,19 @@ requires isolation before any handler runs.
 
 **What each rung guarantees.**
 
-* *Container* (``podman`` preferred, then ``docker``): ``--network=none`` unless the caller asks
-  for network, a read-only root filesystem, a private ``noexec`` ``/tmp``, cgroup memory and pid
-  limits, CPU-time and file-size rlimits, every capability dropped, ``no-new-privileges``, the
-  calling user's uid and gid, and ``--pull=never`` — a probe that pulled an image would be an
-  outbound fetch originating in a tier probe, in the package whose purpose is that egress passes
-  one checked door.
-* *bwrap*: ``--unshare-all`` (network included unless asked for), ``--die-with-parent``,
-  ``--new-session``, ``--clearenv``, read-only binds of the minimal runtime (``/usr``, ``/bin``,
-  ``/sbin``, ``/lib``, ``/lib64`` and six named ``/etc`` entries — never ``/etc`` whole, never a
-  home directory), a fresh ``/proc`` and ``/dev``, a private ``/tmp``, and rlimits applied
-  **inside** the sandbox by ``prlimit``.
+* *Container* (``podman`` preferred, then ``docker``): ``--network=none``, a read-only root
+  filesystem, a private ``noexec`` ``/tmp``, cgroup memory and pid limits, CPU-time and file-size
+  rlimits, every capability dropped, ``no-new-privileges``, the calling user's uid and gid, and
+  ``--pull=never`` — a probe that pulled an image would be an outbound fetch originating in a tier
+  probe, in the package whose purpose is that egress passes one checked door.
+* *bwrap*: ``--unshare-all`` (network included), ``--die-with-parent``, ``--new-session``,
+  ``--clearenv``, read-only binds of the minimal runtime (``/usr``, ``/bin``, ``/sbin``, ``/lib``,
+  ``/lib64`` and six named ``/etc`` entries — never ``/etc`` whole, never a home directory), a
+  fresh ``/proc`` and ``/dev``, a private ``/tmp``, and rlimits applied **inside** the sandbox by
+  ``prlimit``.
+* *Network, on either rung*: none. ``run_isolated``'s ``network`` flag is refused as a caller bug
+  in v1 — no shipped tool runs a subprocess with network, and a door with no consumer stays shut
+  until one is named (spec §14). The flag stays on the port so naming one is a one-line change.
 * *Refuse*: :meth:`TieredSandbox.run_isolated` raises rather than running anything, and the
   executor never reaches it because check #5 refuses first. There is no host-execution tier and no
   flag that creates one.
@@ -478,13 +480,14 @@ class TieredSandbox:
             timeout_seconds: The wall-clock limit. On expiry the whole tree is killed and the
                 result says ``timed_out``.
             env: The explicit allowlist. ``None`` is the empty mapping, never ``os.environ``.
-            network: Whether the sandbox keeps a network namespace. ``run_command`` never passes
-                ``True``; only a tool declaring ``NETWORK`` may.
+            network: Must be ``False``. Refused in v1: no shipped tool runs a subprocess with
+                network (spec §14).
 
         Returns:
             What the command did, with the rung that ran it and the limits that rung could not
             apply recorded on the result. Output is decoded as UTF-8 with replacement, cleaned,
-            and capped with the truncation label when a stream hit the cap.
+            and capped with the truncation label when a stream hit the cap, and
+            ``output_truncated`` says so.
 
         Raises:
             ToolYardError: If the tier is ``UNAVAILABLE`` — a caller bug, because the executor
@@ -492,7 +495,8 @@ class TieredSandbox:
                 handler reached for a subprocess without declaring ``requires_isolation`` — or if
                 the probed runtime can no longer be launched. Never an unisolated run.
             ValidationError: If ``timeout_seconds`` is not a finite positive number, ``env`` is not
-                a mapping of valid variable names to strings, or the write root is not a directory.
+                a mapping of valid variable names to strings, ``network`` is ``True``, or the
+                write root is not a directory.
         """
         report = self.report()
         if report.tier is IsolationTier.UNAVAILABLE:
@@ -504,6 +508,13 @@ class TieredSandbox:
                 details={"isolation_tier": report.tier.value},
             )
         _require_timeout("timeout_seconds", timeout_seconds)
+        if network:
+            raise ValidationError(
+                "run_isolated(network=True) is refused in v1: no shipped tool runs a subprocess "
+                "with network, and a door with no consumer stays shut until one is named "
+                "(spec §14). Name the consumer and reopen it in one change.",
+                details={"field": "network"},
+            )
         child_env = _checked_env(env)
         rejection = _argv_rejection(argv)
         if rejection is not None:
@@ -529,7 +540,6 @@ class TieredSandbox:
                 limits=self._limits,
                 mounts=mounts,
                 env=child_env,
-                network=network,
                 argv=command,
                 uid=os.getuid(),
                 gid=os.getgid(),
@@ -542,7 +552,6 @@ class TieredSandbox:
                 limits=self._limits,
                 mounts=mounts,
                 env=child_env,
-                network=network,
                 argv=command,
             )
         start_ns = self._monotonic_ns()
@@ -581,6 +590,7 @@ class TieredSandbox:
             tier=report.tier,
             timed_out=captured.timed_out,
             limits_unenforced=report.limits_unenforced,
+            output_truncated=captured.output_truncated,
         )
 
     # -- the probe ---------------------------------------------------------------------------------
@@ -613,7 +623,6 @@ class TieredSandbox:
                     limits=self._limits,
                     mounts=mounts,
                     env={},
-                    network=False,
                     argv=_CANARY_ARGV,
                     uid=os.getuid(),
                     gid=os.getgid(),
@@ -652,7 +661,6 @@ class TieredSandbox:
                     limits=self._limits,
                     mounts=mounts,
                     env={},
-                    network=False,
                     argv=_CANARY_ARGV,
                 )
                 passed, excerpt, _ = self._canary(argv)
@@ -736,10 +744,13 @@ def _bwrap_argv(
     limits: ResourceLimits,
     mounts: _Mounts,
     env: Mapping[str, str],
-    network: bool,
     argv: Sequence[str],
 ) -> tuple[str, ...]:
-    """Build the bwrap rung's argv: ADR-0018's tier-2 flags, the workspace, then the command."""
+    """Build the bwrap rung's argv: ADR-0018's tier-2 flags, the workspace, then the command.
+
+    ``--unshare-all`` covers the network namespace; there is deliberately no branch that adds
+    ``--share-net`` (spec §14: the network flag is refused in v1).
+    """
     built: list[str] = [
         bwrap_path,
         "--unshare-all",
@@ -747,8 +758,6 @@ def _bwrap_argv(
         "--new-session",
         "--clearenv",
     ]
-    if network:
-        built.append("--share-net")
     for root in _RUNTIME_BINDS:
         built.extend(("--ro-bind-try", root, root))
     for entry in _ETC_ENTRIES:
@@ -786,22 +795,23 @@ def _container_argv(
     limits: ResourceLimits,
     mounts: _Mounts,
     env: Mapping[str, str],
-    network: bool,
     argv: Sequence[str],
     uid: int,
     gid: int,
 ) -> tuple[str, ...]:
     """Build the container rung's argv: ADR-0018's tier-1 flags, the workspace, then the command.
 
+    ``--network=none`` is unconditional; there is deliberately no branch that omits it (spec §14:
+    the network flag is refused in v1).
+
     Raises:
         ValidationError: If a workspace root's path holds a colon, which the ``--volume`` syntax
             cannot carry. The root is the caller's, so this is theirs to rename.
     """
     built: list[str] = [runtime_path, "run", "--rm", "--pull=never", "--name", name]
-    if not network:
-        built.append("--network=none")
     built.extend(
         (
+            "--network=none",
             "--read-only",
             "--tmpfs",
             _CONTAINER_TMPFS,

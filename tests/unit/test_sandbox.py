@@ -295,12 +295,17 @@ class TestTheBwrapArgv:
         assert inside[5] == "--"
         assert inside[6:] == ["/bin/echo", "hi"]
 
-    def test_network_is_unshared_unless_asked_for(self, workspace: SandboxPaths) -> None:
+    def test_network_is_refused_as_a_caller_bug_and_nothing_launches(
+        self, workspace: SandboxPaths
+    ) -> None:
+        """Spec §14: no shipped tool runs a subprocess with network; the door stays shut."""
         sandbox, runner = build(BWRAP_HOST)
+        sandbox.report()
+        with pytest.raises(ValidationError, match="network"):
+            sandbox.run_isolated(["/bin/true"], paths=workspace, timeout_seconds=1.0, network=True)
+        assert len(runner.calls) == 1, "the canary only"
         sandbox.run_isolated(["/bin/true"], paths=workspace, timeout_seconds=1.0)
         assert "--share-net" not in runner.calls[-1].argv
-        sandbox.run_isolated(["/bin/true"], paths=workspace, timeout_seconds=1.0, network=True)
-        assert "--share-net" in runner.calls[-1].argv
         assert "--unshare-all" in runner.calls[-1].argv
 
     def test_the_workspace_is_bound_in_place_and_is_the_working_directory(
@@ -448,11 +453,14 @@ class TestTheContainerArgv:
         assert argv[0] == "/usr/bin/podman"
         assert "--userns=keep-id" in argv
 
-    def test_network_drops_the_none_flag_only_when_asked(self, workspace: SandboxPaths) -> None:
+    def test_the_network_is_always_none(self, workspace: SandboxPaths) -> None:
         sandbox, runner = build(DOCKER_HOST)
-        sandbox.run_isolated(["/bin/true"], paths=workspace, timeout_seconds=1.0, network=True)
-        assert "--network=none" not in runner.calls[-1].argv
-        assert "--read-only" in runner.calls[-1].argv
+        sandbox.report()
+        with pytest.raises(ValidationError, match="network"):
+            sandbox.run_isolated(["/bin/true"], paths=workspace, timeout_seconds=1.0, network=True)
+        assert len(runner.calls) == 1, "the canary only"
+        sandbox.run_isolated(["/bin/true"], paths=workspace, timeout_seconds=1.0)
+        assert "--network=none" in runner.calls[-1].argv
 
     def test_the_image_is_a_constructor_argument(self, workspace: SandboxPaths) -> None:
         sandbox, runner = build(DOCKER_HOST, container_image="alpine:3.20")
@@ -545,53 +553,68 @@ class TestTheContainerArgv:
 class TestTheWorkspaceBinds:
     """Ancestors first, so the nearest root wins on both rungs, and they agree with each other."""
 
-    def test_a_read_root_inside_the_write_root_is_bound_after_it_and_read_only(
+    def test_a_read_root_resolving_inside_the_write_root_is_bound_after_it_and_read_only(
         self, tmp_path: Path
     ) -> None:
+        """Construction refuses overlap as declared; a symlinked alias is what resolution finds."""
         write_root = tmp_path / "work"
         nested = write_root / "reference"
         nested.mkdir(parents=True)
+        alias = tmp_path / "alias"
+        alias.symlink_to(nested)
         sandbox, runner = build(BWRAP_HOST)
         sandbox.run_isolated(
             ["/bin/true"],
-            paths=SandboxPaths(write_root=write_root, read_roots=(nested,)),
+            paths=SandboxPaths(write_root=write_root, read_roots=(alias,)),
             timeout_seconds=1.0,
         )
         argv = list(runner.calls[-1].argv)
         assert argv.index("--bind") < argv.index("--ro-bind")
         assert ("--ro-bind", str(nested.resolve()), str(nested.resolve())) in triples(argv)
 
-    def test_a_write_root_inside_a_read_root_is_bound_after_it_and_writable(
+    def test_a_write_root_resolving_inside_a_read_root_is_bound_after_it_and_writable(
         self, tmp_path: Path
     ) -> None:
         read_root = tmp_path / "project"
-        write_root = read_root / "out"
-        write_root.mkdir(parents=True)
+        out = read_root / "out"
+        out.mkdir(parents=True)
+        alias = tmp_path / "alias-out"
+        alias.symlink_to(out)
         sandbox, runner = build(DOCKER_HOST)
         sandbox.run_isolated(
             ["/bin/true"],
-            paths=SandboxPaths(write_root=write_root, read_roots=(read_root,)),
+            paths=SandboxPaths(write_root=alias, read_roots=(read_root,)),
             timeout_seconds=1.0,
         )
         volumes = [value for flag, value in pairs(runner.calls[-1].argv) if flag == "--volume"]
         assert volumes == [
             f"{read_root.resolve()}:{read_root.resolve()}:ro",
-            f"{write_root.resolve()}:{write_root.resolve()}:rw",
+            f"{out.resolve()}:{out.resolve()}:rw",
         ]
 
-    def test_a_read_root_equal_to_the_write_root_or_missing_or_repeated_is_bound_once(
+    def test_a_missing_read_root_is_skipped_and_a_symlinked_alias_is_bound_once(
         self, tmp_path: Path
     ) -> None:
+        """What construction cannot see lexically, the binds deduplicate after resolution."""
         write_root = tmp_path / "work"
         write_root.mkdir()
         reference = tmp_path / "reference"
         reference.mkdir()
+        alias_of_write = tmp_path / "alias-work"
+        alias_of_write.symlink_to(write_root)
+        alias_of_reference = tmp_path / "alias-reference"
+        alias_of_reference.symlink_to(reference)
         sandbox, runner = build(BWRAP_HOST)
         sandbox.run_isolated(
             ["/bin/true"],
             paths=SandboxPaths(
                 write_root=write_root,
-                read_roots=(write_root, reference, tmp_path / "never-created", reference),
+                read_roots=(
+                    alias_of_write,
+                    reference,
+                    tmp_path / "never-created",
+                    alias_of_reference,
+                ),
             ),
             timeout_seconds=1.0,
         )
@@ -599,6 +622,7 @@ class TestTheWorkspaceBinds:
         assert argv.count("--bind") == 1
         assert argv.count("--ro-bind") == 1
         assert "never-created" not in " ".join(argv)
+        assert "alias" not in " ".join(argv)
 
     def test_a_symlinked_root_is_bound_at_its_resolved_path(self, tmp_path: Path) -> None:
         real = tmp_path / "real"
@@ -683,6 +707,7 @@ class TestTheResult:
         assert result.tier is IsolationTier.BWRAP
         assert result.duration_ms == 7
         assert result.timed_out is False
+        assert result.output_truncated is False
         assert result.limits_unenforced == ()
 
     def test_a_stream_over_the_cap_is_labelled_as_stopped_not_ended(
@@ -700,6 +725,8 @@ class TestTheResult:
         assert TRUNCATION_MARKER in result.stdout
         assert len(result.stdout.encode("utf-8")) <= cap
         assert result.stderr == ""
+        assert result.output_truncated is True
+        assert result.timed_out is False
 
     def test_invalid_utf8_and_nul_are_cleaned_never_raised(self, workspace: SandboxPaths) -> None:
         sandbox, _ = build(BWRAP_HOST, outcomes={"bwrap": captured(stdout=b"a\xffb\x00c")})
@@ -766,6 +793,7 @@ class TestTheArgvIsTheModels:
         assert problem in result.stderr
         assert result.tier is IsolationTier.BWRAP
         assert result.timed_out is False
+        assert result.output_truncated is False
         assert len(runner.calls) == launched_before
 
     def test_a_tuple_is_as_good_as_a_list(self, workspace: SandboxPaths) -> None:

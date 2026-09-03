@@ -8,7 +8,8 @@ lands on bwrap and runs its real canary. On a machine with a container runtime t
 runs the same tests under it. That is how the middle rung — the one most deployments actually land
 on — is exercised instead of being masked by the top one.
 
-Nothing here needs a network, and the one test that opens a socket listens on loopback.
+Nothing here needs a network, and the one test that opens a socket listens on loopback, to show
+that even loopback is gone from inside.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from baseaicore import ValidationError
 
 from toolyard import IsolationTier, ResourceLimits, SandboxPaths, TieredSandbox
 from toolyard._safe import TRUNCATION_LABEL_TEMPLATE
@@ -174,12 +176,10 @@ class TestNamespaces:
         assert result.exit_code == 0, result.stderr
         assert result.stdout.startswith("unreachable")
 
-    def test_loopback_is_reachable_only_when_network_is_asked_for(
-        self, sandbox: TieredSandbox, workspace: SandboxPaths, rung: IsolationTier
+    def test_network_is_refused_and_even_loopback_is_gone_without_it(
+        self, sandbox: TieredSandbox, workspace: SandboxPaths
     ) -> None:
-        """``--share-net`` keeps the host's namespace; without it, even loopback is gone."""
-        if rung is not IsolationTier.BWRAP:
-            pytest.skip("a container's loopback is its own; the positive case is bwrap's")
+        """Spec §14: the flag is refused in v1, and the namespace it would have kept is absent."""
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             listener.listen(1)
@@ -192,10 +192,10 @@ class TestNamespaces:
                 "except OSError:",
                 "    print('unreachable')",
             )
+            with pytest.raises(ValidationError, match="network"):
+                run(sandbox, workspace, *probe, network=True)
             denied = run(sandbox, workspace, *probe)
-            allowed = run(sandbox, workspace, *probe, network=True)
         assert denied.stdout.strip() == "unreachable", denied.stderr
-        assert allowed.stdout.strip() == "connected", allowed.stderr
 
 
 class TestTheFilesystemView:
@@ -362,6 +362,7 @@ class TestTheLimits:
         )
         assert TRUNCATION_MARKER in result.stdout
         assert len(result.stdout.encode("utf-8")) <= OUTPUT_CAP
+        assert result.output_truncated is True
         assert result.timed_out is False
         assert result.exit_code != 0
         assert time.monotonic() - started < 15.0
