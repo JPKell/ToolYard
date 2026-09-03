@@ -1,0 +1,52 @@
+{
+  "echo": {
+    "definition": {
+      "description": "A harmless fake named echo.",
+      "name": "echo",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      }
+    },
+    "sha256": "29c47ecbd975416d463f5bfde6540a8bece8411b9c5b8557528a075167d6553a"
+  },
+  "no_args": {
+    "definition": {
+      "description": "A harmless fake named no_args.",
+      "name": "no_args",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "sha256": "69491eb983e6020f04830b0225f166afd8ce980496cc7d164f042057ad3b524f"
+  },
+  "read_notes": {
+    "definition": {
+      "description": "A harmless fake named read_notes.",
+      "name": "read_notes",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "sha256": "f5bd0ec1d6e7541aedfd103fc10227f10e4df881187980a92ba77f29813cc189"
+  }
+}
