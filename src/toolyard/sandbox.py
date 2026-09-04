@@ -102,6 +102,7 @@ __all__ = [
     "MIN_OUTPUT_BYTES",
     "PROBE_TIMEOUT_SECONDS",
     "UNLAUNCHABLE_EXIT_CODE",
+    "ARGV_REFUSED_PREFIX",
     "Captured",
     "ResourceLimits",
     "Runner",
@@ -156,7 +157,15 @@ UNLAUNCHABLE_EXIT_CODE: Final[int] = 127
 The shell convention for "command not found", and the one code a caller can rely on meaning "this
 never ran": a model that sends an empty argv, a non-string item, or a NUL gets a result rather than
 an exception (ADR-0053 decision 4), and the result has to say what happened.
+
+It is not sufficient on its own to *identify* that case, because a real command may also exit 127.
+:data:`ARGV_REFUSED_PREFIX` is what distinguishes the two.
 """
+
+ARGV_REFUSED_PREFIX: Final[str] = "toolyard: argv refused before launch: "
+"""What a pre-launch refusal writes to ``stderr``, and how a caller tells one apart from a command
+that genuinely exited 127. Named rather than matched as a literal in two places, so the two cannot
+drift."""
 
 _CONTAINER_RUNTIMES: Final[tuple[str, ...]] = ("podman", "docker")
 _CANARY_ARGV: Final[tuple[str, ...]] = ("/bin/true",)
@@ -521,7 +530,7 @@ class TieredSandbox:
             return SubprocessResult(
                 exit_code=UNLAUNCHABLE_EXIT_CODE,
                 stdout="",
-                stderr=f"toolyard: argv refused before launch: {rejection}",
+                stderr=f"{ARGV_REFUSED_PREFIX}{rejection}",
                 duration_ms=0,
                 tier=report.tier,
                 timed_out=False,
