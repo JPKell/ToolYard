@@ -25,6 +25,8 @@ vocabulary below (:class:`SandboxPaths`, :class:`IsolationTier`, :class:`Subproc
 
 from __future__ import annotations
 
+import errno
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -46,6 +48,7 @@ __all__ = [
     "Sandbox",
     "SandboxPaths",
     "SubprocessResult",
+    "fully_resolve",
 ]
 
 MAX_CANDIDATE_CHARS: Final[int] = 4_096
@@ -183,6 +186,52 @@ class SubprocessResult:
     timed_out: bool = False
     limits_unenforced: tuple[str, ...] = ()
     output_truncated: bool = False
+
+
+def fully_resolve(path: Path) -> Path:
+    """Resolve every symlink in ``path``, giving one answer on every supported interpreter.
+
+    The plain :meth:`pathlib.Path.resolve` cannot be used here, because it answers a symlink
+    **cycle** differently depending on the interpreter: 3.13 and later give up and hand back the
+    path unresolved, while 3.12 raises ``RuntimeError("Symlink loop from …")``. A containment
+    answer that depends on which Python is running is itself the defect — the same call would
+    admit a path on one supported interpreter and refuse it on another, and CI's blocking matrix
+    covers both — so the cycle is settled here, once, and settled **closed**: an unresolvable
+    cycle is refused.
+
+    Nothing is lost by refusing it. A cycle is not openable — the kernel answers ``ELOOP`` to every
+    attempt — so the path names nothing a handler could ever read or write; refusing it costs no
+    reachable file. ADR-0018's floor is refusal, and this is the same posture the caller already
+    takes for a path the operating system will not parse.
+
+    The mechanism is ``os.path.realpath(strict=True)``, which raises ``ELOOP`` for a cycle on every
+    interpreter from 3.10 on. Because strict resolution also refuses a path that does not yet
+    exist — and a path that does not yet exist is exactly what ``write_file`` is handed — anything
+    that is *not* a cycle falls back to the ordinary non-strict resolution, which is what this
+    function returned before.
+
+    Args:
+        path: An absolute path, resolved or not.
+
+    Returns:
+        The fully resolved path. A component that does not exist is resolved lexically, as
+        :meth:`pathlib.Path.resolve` resolves it.
+
+    Raises:
+        OSError: ``ELOOP`` when the path traverses an unresolvable symlink cycle, and whatever the
+            underlying resolution raises otherwise (a name too long, for instance). The caller
+            converts every one of these into a :class:`PathEscape`.
+        RuntimeError: What Python 3.12's non-strict resolution raises for a cycle it detects that
+            the strict probe did not. Unreachable on 3.13 and later; caught by the caller.
+    """
+    try:
+        return Path(os.path.realpath(path, strict=True))
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise
+        # Not a cycle: a missing component, an unreadable directory. Non-strict resolution is the
+        # answer containment has always given for those, and it is the one write_file needs.
+        return path.resolve()
 
 
 class PathEscape(Exception):
@@ -384,14 +433,16 @@ class PathContainment:
         try:
             proposed = Path(cleaned)
             absolute = proposed if proposed.is_absolute() else base / proposed
-            resolved = absolute.resolve()
+            resolved = fully_resolve(absolute)
         except (OSError, ValueError, RuntimeError) as exc:
             # A path the operating system will not even parse is an escape, not a crash: the model
-            # chose the string, so this resolves to a refusal like every other thing it chose.
+            # chose the string, so this resolves to a refusal like every other thing it chose. An
+            # unresolvable symlink cycle arrives here too, on every interpreter — see
+            # :func:`fully_resolve`.
             raise PathEscape(cleaned, root_role=role) from exc
         for root in roots:
             try:
-                resolved_root = root.resolve()
+                resolved_root = fully_resolve(root)
             except (OSError, ValueError, RuntimeError):
                 continue
             if resolved == resolved_root or resolved_root in resolved.parents:

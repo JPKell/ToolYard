@@ -20,6 +20,18 @@ order, path containment, the record, and the tiered isolation ladder. **Nothing 
   was the only leftover: nothing else under `.github/`, `pyproject.toml`, `requirements/`,
   `README.md`, `CONTRIBUTING.md` or `SECURITY.md` named CutCtx.
 
+* **An unresolvable symlink cycle is refused, on every supported interpreter.** Containment
+  delegated the question to `Path.resolve()`, which answers it differently by version: 3.13 and
+  later give up on a cycle and hand back the path unresolved, so it was admitted; 3.12 raises
+  `RuntimeError("Symlink loop from …")`, so it was refused. The blocking CI matrix covers both, so
+  the containment suite was red on 3.12 alone — and a containment answer that depends on which
+  interpreter is running is itself the defect. `containment.fully_resolve()` settles it once and
+  settles it **closed**: `os.path.realpath(strict=True)` raises `ELOOP` for a cycle on every
+  interpreter from 3.10, and anything that is not a cycle falls back to the ordinary non-strict
+  resolution that a not-yet-created path needs. Refusing costs no reachable file — the kernel
+  answers `ELOOP` to every attempt to open a cycle — and it matches the refusal containment
+  already gave a path the operating system will not parse.
+
 ### Added — Phase 2, sandbox
 
 * **`TieredSandbox`** (`sandbox.py`) — the ADR-0018 ladder applied to tools: container (`podman`

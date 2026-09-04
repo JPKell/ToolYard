@@ -25,6 +25,7 @@ ALLOWED_IMPORTS = frozenset(
         "enum",
         "collections",
         "datetime",
+        "errno",
         "hashlib",
         "logging",
         "math",

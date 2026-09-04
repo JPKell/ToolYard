@@ -8,12 +8,14 @@ them would fail here. Extend it; never relax it.
 
 from __future__ import annotations
 
+import errno
 import sys
 from pathlib import Path
 
 import pytest
 from baseaicore import ValidationError
 
+import toolyard.containment
 from fakes import ScriptedRunner, which_for
 from toolyard import (
     IsolationTier,
@@ -187,21 +189,82 @@ class TestUnusablesCandidates:
             containment.resolve_write("/etc/passwd", vanished)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
-    def test_a_symlink_loop_stays_inside_the_root_rather_than_crashing(
+    def test_a_symlink_loop_is_refused_rather_than_admitted_unresolved(
         self, containment: Sandbox, roots: SandboxPaths
     ) -> None:
-        """An unresolvable loop is admitted, and that is the right answer, not a gap.
+        """An unresolvable cycle is refused, on every supported interpreter.
 
-        ``Path.resolve()`` gives up on a cycle and returns the path unresolved. The containment
-        question is "does this land inside a root", and an unresolved path under the write root
-        does — while the operating system refuses to open it (``ELOOP``), so nothing is reachable
-        through it. Pinned here because it looks like a hole and is not, and because Phase 2's
-        ``O_NOFOLLOW`` work is where the difference between "inside the root" and "openable" stops
-        being academic.
+        This test used to assert the opposite, on the premise that ``Path.resolve()`` gives up on
+        a cycle and hands back the path unresolved. That premise is true on 3.13 and later and
+        **false on 3.12**, where the same call raises ``RuntimeError("Symlink loop from …")`` — so
+        the containment answer varied with the interpreter, and CI's blocking matrix covers both.
+        :func:`~toolyard.containment.fully_resolve` settles it closed: the cycle names nothing
+        openable (the kernel answers ``ELOOP`` either way), so refusing it costs no reachable file
+        and it matches the refusal already given to a path the OS will not parse.
         """
         loop = roots.write_root / "loop"
         loop.symlink_to(loop)
-        assert containment.resolve_read("loop/x", roots) == loop / "x"
+        with pytest.raises(PathEscape):
+            containment.resolve_read("loop/x", roots)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
+    def test_the_loop_itself_is_refused_and_not_only_a_path_through_it(
+        self, containment: Sandbox, roots: SandboxPaths
+    ) -> None:
+        """The cycle's own name resolves no better than a name underneath it."""
+        loop = roots.write_root / "loop"
+        loop.symlink_to(loop)
+        with pytest.raises(PathEscape):
+            containment.resolve_write("loop", roots)
+
+    @pytest.mark.parametrize(
+        "raised",
+        [
+            pytest.param(RuntimeError("Symlink loop from '/w/loop'"), id="python-3.12"),
+            pytest.param(OSError(errno.ELOOP, "Too many levels of symbolic links"), id="eloop"),
+            pytest.param(ValueError("embedded null byte"), id="valueerror"),
+        ],
+    )
+    def test_whatever_the_resolution_seam_raises_becomes_a_refusal(
+        self,
+        containment: Sandbox,
+        roots: SandboxPaths,
+        monkeypatch: pytest.MonkeyPatch,
+        raised: Exception,
+    ) -> None:
+        """The 3.12 path, proven on 3.13 — there is no 3.12 on this machine to prove it for real.
+
+        On 3.12 ``fully_resolve``'s fallback can still raise ``RuntimeError`` for a cycle the
+        strict probe did not see, so the caller's ``except`` must cover it. That branch cannot run
+        here, so it is driven by making the seam raise what 3.12 would.
+        """
+
+        def refuse(_path: Path) -> Path:
+            raise raised
+
+        monkeypatch.setattr(toolyard.containment, "fully_resolve", refuse)
+        with pytest.raises(PathEscape):
+            containment.resolve_read("notes.md", roots)
+
+    def test_a_root_the_seam_cannot_resolve_admits_nothing(
+        self, containment: Sandbox, roots: SandboxPaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A root that will not resolve is skipped, and skipping every root is a refusal.
+
+        The candidate resolves; the roots do not. Without the skip this would raise something that
+        is not a :class:`PathEscape` out of containment, which is the one thing containment may
+        never do.
+        """
+        real = toolyard.containment.fully_resolve
+
+        def refuse_roots(path: Path) -> Path:
+            if path in (roots.write_root, *roots.read_roots):
+                raise OSError(errno.ELOOP, "Too many levels of symbolic links")
+            return real(path)
+
+        monkeypatch.setattr(toolyard.containment, "fully_resolve", refuse_roots)
+        with pytest.raises(PathEscape):
+            containment.resolve_read("notes.md", roots)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
     def test_a_loop_whose_first_hop_leaves_the_root_is_still_refused(
