@@ -54,6 +54,7 @@ from toolyard.types import (
     RiskClass,
     ToolCallRecord,
     ToolOutput,
+    ToolRefusal,
     ToolResult,
     ToolStatus,
 )
@@ -485,6 +486,24 @@ class ToolExecutor:
                     Reason.TIMEOUT,
                     f"elapsed {elapsed_seconds:.3f} s exceeds the {limit_seconds:.3f} s limit",
                     status=ToolStatus.TIMEOUT,
+                ),
+                None,
+                started_at,
+                start_ns,
+                elapsed_ms,
+            )
+        if isinstance(output, ToolRefusal):
+            # The handler's own check said no. It is carried through unchanged rather than
+            # re-decided here: the executor cannot re-run an ADR-0026 §3 check it did not make, and
+            # a reason it did not recognize is impossible, because `Reason` is closed and
+            # `ToolRefusal` validates against it at construction.
+            return self._finish(
+                state,
+                _Refusal(
+                    output.reason,
+                    output.detail,
+                    record_detail=output.record_detail,
+                    status=output.status,
                 ),
                 None,
                 started_at,

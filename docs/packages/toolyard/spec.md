@@ -96,7 +96,20 @@ class ToolSpec:
     # InvalidToolSpec naming the failing path.
 
 class ToolHandler(Protocol):
-    def execute(self, args: Mapping[str, Any], context: ToolContext) -> ToolOutput: ...
+    def execute(self, args: Mapping[str, Any], context: ToolContext) -> ToolOutput | ToolRefusal:
+        ...
+    # A handler returns its output, or a ToolRefusal saying which of *its own* checks said no.
+    # Without the second return there is no way for `http_fetch` to produce §13's "REFUSED / the
+    # specific ADR-0026 check": a handler could only succeed or raise, and a raise is `FAILED` /
+    # `handler_error`, which names no check. ADR-0053 decision 4 is that a refusal is data, and
+    # this is that rule applied one layer in.
+
+@dataclass(frozen=True, slots=True)
+class ToolRefusal:                     # a handler's own refusal, returned and never raised
+    reason: Reason                     # from the closed set; the check that said no
+    detail: str                        # what the model is told — never a root, never a host list
+    status: ToolStatus = REFUSED       # REFUSED, FAILED or TIMEOUT; OK is refused at construction
+    record_detail: str | None = None   # what only the record and the operator see
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:                     # injected per invocation by the application
@@ -187,20 +200,50 @@ class ToolCallRecord:                  # what the store persists
 class ToolCallStore(Protocol):
     def append(self, record: ToolCallRecord) -> None: ...
 
-# Built-ins (each a ToolSpec + handler pair, registered explicitly, never implicitly)
-read_file_tool()      # READ_ONLY, NONE  — read within read_roots ∪ write_root, size-capped
+# Built-ins (each returns the (ToolSpec, ToolHandler) pair, registered explicitly, never
+# implicitly: `registry.register(*read_file_tool())`)
+read_file_tool(*, max_bytes: int = 1_048_576)
+                      # READ_ONLY, NONE  — read within read_roots ∪ write_root; a file over the cap
+                      # is REFUSED rather than partly read, because a handler that capped its own
+                      # output would make ToolCallRecord.result_sha256 a digest of the cap
 write_file_tool()     # MUTATING,  NONE  — write within write_root only; parents created inside it
-list_dir_tool()       # READ_ONLY, NONE
-run_command_tool(sandbox: Sandbox)
+list_dir_tool(*, max_entries: int = 1_000)
+                      # READ_ONLY, NONE
+run_command_tool(sandbox: Sandbox, *, env: Mapping[str, str] = DEFAULT_COMMAND_ENV)
                       # MUTATING,  NONE  — argv form only (never a shell string), isolated per
                       # tier; takes the SAME sandbox instance the executor holds, so the tier the
-                      # executor checked is the tier the command runs under
-http_fetch_tool(allowed_hosts: Sequence[str], *, max_bytes: int = 8_388_608)
-                      # READ_ONLY, NETWORK — ADR-0026 §3 checks before and during the fetch
+                      # executor checked is the tier the command runs under. `env` is the child's
+                      # whole environment and it is the CALLER's: a model never chooses it, and a
+                      # malformed one raises. The default supplies PATH and nothing else, because
+                      # bwrap's --clearenv leaves none.
+http_fetch_tool(allowed_hosts: Sequence[str], *, resolve: Resolver,
+                max_bytes: int = 8_388_608, max_redirects: int = 3,
+                allowed_media_types: Sequence[str] = DEFAULT_ALLOWED_MEDIA_TYPES,
+                connect_timeout_seconds: float = 5.0, read_timeout_seconds: float = 30.0,
+                transport: httpx.BaseTransport | None = None)
+                      # READ_ONLY, NETWORK — ADR-0026 §3 checks before and during the fetch.
+                      # `resolve` is REQUIRED and has no default: the link-local rule compares
+                      # addresses after resolution, and `.importlinter` forbids `socket` in every
+                      # module of this package, forever — so ToolYard opens no resolver socket of
+                      # its own and the application injects one. Required rather than defaulted
+                      # because every default available here is either a boundary violation or a
+                      # resolver that answers nothing, and a resolver that answers nothing makes
+                      # the link-local check vacuous without saying so.
+                      # `transport` is httpx's injection seam, which is how the whole §3 vector set
+                      # is exercised with no socket opened (§18).
+
+type Resolver = Callable[[str], Sequence[str]]
+                      # host -> the addresses it names. Injected so the link-local rule is testable
+                      # without a DNS server that answers with one.
 
 # The closed set of machine-readable reasons a non-OK result carries (§13). A consumer maps each
 # onto its own deviation category, so a reason nobody enumerated has no defined disposition:
 # adding one is a MINOR change (§19) and a change consumers must be told about.
+#
+# Nine of them are the executor's own checks and are produced before any handler runs. The rest
+# are the built-ins': the ADR-0026 §3 checks `http_fetch` performs at the socket (§11.5), and the
+# handful of ways a file argument names something unusable. A handler produces one by returning a
+# `ToolRefusal`; it can no more invent a reason than the executor can.
 class Reason(StrEnum): ...   # exactly the reason values named in §13
 REFUSAL_REASONS: Final[frozenset[str]]
 
@@ -266,7 +309,11 @@ retention; oversize outputs go to the application's artifact directory, referenc
 5. **`http_fetch` performs the ADR-0026 §3 checks itself** — scheme http/https, host in the
    caller's allowlist (loopback only when empty), literal-IP comparison after DNS resolution,
    re-checking on every redirect hop, size cap enforced during streaming — so no consumer can
-   forget them.
+   forget them. Resolution is the injected `resolve`, because this package opens no socket of its
+   own; a resolver that answers nothing for a host leaves the link-local rule with nothing to
+   compare, which is why the argument is required rather than defaulted. The checks are the same
+   checks LoadCoach's evidence fetch makes, and they are proven so: the ADR-0026 §3 vectors are one
+   JSON fixture, byte-identical in both repositories, driving both implementations (§18).
 6. **Every call is recorded**, refused and failed calls included, with `redact_args` honoured
    (hash stored, plaintext never).
 7. Wire definitions are provider-neutral and byte-stable for a given spec — they are hashed into
@@ -304,7 +351,21 @@ character boundary, and the label states both byte figures, because a model that
 | Path escapes containment (after resolution) | `REFUSED` / `path_escape`, naming root and target |
 | Egress tool where egress is not permitted | `REFUSED` / `egress_not_permitted` |
 | No isolation tier for a tool declaring `requires_isolation` | `REFUSED` / `isolation_unavailable` |
-| Fetch host/scheme/redirect/size violation | `REFUSED` / the specific ADR-0026 check |
+| Fetch URL unparsable | `REFUSED` / `malformed_url` |
+| Fetch scheme outside `{http, https}` | `REFUSED` / `scheme_not_allowed` |
+| Fetch URL names no host | `REFUSED` / `no_host` |
+| Fetch host outside the tool's allowlist | `REFUSED` / `host_not_allowed` |
+| Fetch host is, or resolves to, a link-local address | `REFUSED` / `link_local_address` |
+| Redirect changes host | `REFUSED` / `cross_host_redirect` |
+| Redirects past the cap | `REFUSED` / `too_many_redirects` |
+| `Content-Type` outside the tool's allowlist | `REFUSED` / `content_type_not_allowed` |
+| Body, or a declared `Content-Length`, over a cap | `REFUSED` / `too_large` |
+| Fetch transport failed (connect, TLS, read, timeout) | `FAILED` / `transport_error` |
+| Origin answered 4xx or 5xx | `FAILED` / `http_status` |
+| Nothing at the resolved path | `FAILED` / `file_not_found` |
+| Something is there, but not the kind of thing the tool handles | `FAILED` / `not_a_regular_file` |
+| The operating system refused the read or the write | `FAILED` / `permission_denied` |
+| File content is not decodable as UTF-8 | `FAILED` / `not_utf8` |
 | Handler exception | `FAILED` / exception class name (message capped, no traceback to the model) |
 | Timeout | `TIMEOUT` / elapsed and limit |
 | Output over the size cap | `OK` with truncated, labelled content; full output hash recorded |
@@ -315,6 +376,17 @@ validator's paths, the root and target of an escape, the exception class, elapse
 it, and §11.2 requires a refusal to be diagnosable from the record alone. A `TIMEOUT` discards the
 handler's output rather than returning it, because a result the executor has declared timed out
 must not reach the model as though it had not.
+
+**Where the `REFUSED`/`FAILED` line falls**, because a consumer reads it as "is retrying
+meaningful": `REFUSED` is *this package declining* — a rule said no, before the work or instead of
+it, and the identical call will be declined again for the same reason however many times it is
+made. `FAILED` is *the work attempted and the world answering badly* — a file that is not there, an
+origin that is down, bytes that are not text; a different argument, or the same one later, may well
+succeed. The rows above are assigned by that test and not by how serious the outcome sounds, which
+is why `too_large` is a refusal (a cap this package chose) and `file_not_found` is a failure (a
+fact about the filesystem). `FAILED` rows carrying a named reason are refinements of
+`handler_error`: they exist so a model is told what was wrong with its argument instead of an
+exception's class name.
 
 ## 14. Security considerations
 
@@ -339,7 +411,15 @@ must not reach the model as though it had not.
   `run_isolated`'s `network` flag is refused in v1: no shipped tool runs a subprocess with network,
   and a door with no consumer stays shut until one is named.
 * Secrets: handlers receive only `ToolContext`; nothing in ToolYard reads or forwards application
-  configuration, so an API key cannot leak through a tool by construction.
+  configuration, so an API key cannot leak through a tool by construction. `http_fetch` in
+  particular has no credential surface at all: it sends no `Authorization` header, reads no
+  environment and no file, and there is no argument through which one could be supplied. A fetch
+  needing a credential is a fetch this package does not perform.
+* `http_fetch` **resolves, then connects**, and the two are separate operations against a name the
+  caller allowlisted. A name whose answer changes between them — DNS rebinding against an
+  allowlisted host — is outside what this design addresses; closing it needs the connection pinned
+  to the address that was checked, which httpx does not expose. The allowlist is what stands in its
+  place, and the docstring says so rather than implying a pinning that is not implemented.
 * Resource limits on subprocesses — CPU time, memory, file size, process count — are rlimits
   applied **inside** the sandbox (`prlimit` under bwrap; cgroup limits plus `--ulimit` under a
   container), never by a `preexec_fn` in the application's process, which is unsafe under threads

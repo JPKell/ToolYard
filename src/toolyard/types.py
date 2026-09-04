@@ -47,6 +47,7 @@ __all__ = [
     "ToolContext",
     "ToolHandler",
     "ToolOutput",
+    "ToolRefusal",
     "ToolResult",
     "ToolSpec",
     "ToolStatus",
@@ -195,11 +196,80 @@ class Reason(StrEnum):
     """The handler exceeded its limit."""
 
     HANDLER_ERROR = "handler_error"
-    """The handler raised, or returned something that is not a :class:`ToolOutput`."""
+    """The handler raised, or returned neither a :class:`ToolOutput` nor a :class:`ToolRefusal`."""
+
+    # -- the built-ins' own checks (spec §13) ----------------------------------------------------
+    # Everything above is the executor's and is decided before a handler runs. Everything below is
+    # produced by a shipped tool returning a `ToolRefusal`. The split between REFUSED and FAILED is
+    # spec §13's: REFUSED is this package declining under a rule of its own, and the identical call
+    # will be declined again; FAILED is the work attempted and the world answering badly, where a
+    # different argument or a later attempt may succeed.
+
+    MALFORMED_URL = "malformed_url"
+    """REFUSED. The fetch URL does not parse. ADR-0026 §3, before a name is resolved."""
+
+    SCHEME_NOT_ALLOWED = "scheme_not_allowed"
+    """REFUSED. Not ``http`` or ``https``. ``file://`` in particular is a local read in a URL's
+    clothing."""
+
+    NO_HOST = "no_host"
+    """REFUSED. The URL parses and names no host, so an allowlist has nothing to check."""
+
+    HOST_NOT_ALLOWED = "host_not_allowed"
+    """REFUSED. Outside the tool's host allowlist. The allowlist's members are never named back."""
+
+    LINK_LOCAL_ADDRESS = "link_local_address"
+    """REFUSED. The host is, or resolves to, a link-local address. The metadata range, refused
+    unconditionally — the allowlist is not a second opinion on this one."""
+
+    CROSS_HOST_REDIRECT = "cross_host_redirect"
+    """REFUSED. A redirect changed host. Never followed, whatever the count."""
+
+    TOO_MANY_REDIRECTS = "too_many_redirects"
+    """REFUSED. Past the hop cap."""
+
+    CONTENT_TYPE_NOT_ALLOWED = "content_type_not_allowed"
+    """REFUSED. Checked before any of the body is returned, so it is a fact about the response and
+    not about what parsing it happened to do."""
+
+    TOO_LARGE = "too_large"
+    """REFUSED. A cap this package chose said no: a declared ``Content-Length``, a body that
+    outgrew the cap mid-stream, or a file larger than ``read_file``'s cap. Not a truncation — the
+    executor's labelled truncation is about what the *model* sees, while this is about what the
+    process would have to load, and a handler that returned a prefix would make the record's
+    ``result_sha256`` a digest of the prefix."""
+
+    TRANSPORT_ERROR = "transport_error"
+    """FAILED. Connect, TLS, read or timeout. The origin was never heard from; retrying is
+    meaningful."""
+
+    HTTP_STATUS = "http_status"
+    """FAILED. The origin answered, with 4xx or 5xx. The detail carries the code."""
+
+    FILE_NOT_FOUND = "file_not_found"
+    """FAILED. Nothing at the resolved path. The path was contained; it just names nothing."""
+
+    NOT_A_REGULAR_FILE = "not_a_regular_file"
+    """FAILED. Something is there and it is not what this tool handles — a directory where a file
+    was wanted, a file where a directory was, a device, a socket, a fifo."""
+
+    PERMISSION_DENIED = "permission_denied"
+    """FAILED. The operating system refused the open. Inside containment, so this is the host's
+    answer and not a containment decision — a containment decision is ``path_escape``."""
+
+    NOT_UTF8 = "not_utf8"
+    """FAILED. The bytes are not decodable text. Returned rather than decoded with replacement,
+    because a model handed mojibake cannot tell it read a broken file."""
 
 
 REFUSAL_REASONS: Final[frozenset[str]] = frozenset(reason.value for reason in Reason)
 """Every reason string this package can produce, for a consumer to exhaust in a match."""
+
+
+_REFUSAL_STATUSES: Final[frozenset[ToolStatus]] = frozenset(
+    {ToolStatus.REFUSED, ToolStatus.FAILED, ToolStatus.TIMEOUT}
+)
+"""Every status a :class:`ToolRefusal` may carry — that is, every status but ``OK``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +309,76 @@ class ToolOutput:
                 f"ToolOutput.content must be a str; got {type(self.content).__name__}. Serialize "
                 "structured output into text for the model and pass the structure as `structured`.",
                 details={"field": "content", "kind": type(self.content).__name__},
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRefusal:
+    """What a handler returns instead of output when one of *its own* checks says no.
+
+    ADR-0053 decision 4 — a refusal is a result, not an exception — applied one layer in. The
+    executor's five checks run before a handler and produce their refusals directly; a handler has
+    checks of its own that no executor could make for it (``http_fetch``'s ADR-0026 §3 ladder is
+    the whole of spec §11.5), and without this type the only thing it could do with a failed one is
+    raise. A raise is ``FAILED`` / ``handler_error``, which names an exception class and not a
+    check, so spec §13's "the specific ADR-0026 check" would be unexpressible and every fetch
+    refusal would arrive at a consumer as the same undifferentiated failure.
+
+    The reason is a :class:`Reason`, so a handler can no more invent a vocabulary than the executor
+    can: the set stays closed, and the property test that asserts no unrecognized reason is ever
+    produced covers handlers too.
+
+    Attributes:
+        reason: The check that said no.
+        detail: What the **model** is told. It names the failed check and the model's own argument,
+            and never a containment root, an allowlist's members or a resolved address — refusal
+            text is part of the prompt surface (ADR-0053's last consequence).
+        status: ``REFUSED``, ``FAILED`` or ``TIMEOUT``. Spec §13 assigns one per row and the choice
+            is what tells a consumer whether retrying is meaningful; ``OK`` is refused here,
+            because a refusal that reports success is the one shape that cannot be true.
+        record_detail: What only the record and the operator see — the resolved path, the address a
+            host resolved to. Appended to the recorded summary, never to the model's content.
+    """
+
+    reason: Reason
+    detail: str
+    status: ToolStatus = ToolStatus.REFUSED
+    record_detail: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a refusal that is not one.
+
+        Raises:
+            ValidationError: If ``reason`` is not a :class:`Reason`, ``detail`` is not a non-empty
+                string, ``status`` is not one of ``REFUSED``/``FAILED``/``TIMEOUT``, or
+                ``record_detail`` is neither ``None`` nor a string. Raised inside the handler's own
+                call frame, so the executor reports it as ``handler_error`` like any other broken
+                handler — a handler bug is never a broken agent loop.
+        """
+        if not isinstance(self.reason, Reason):
+            raise ValidationError(
+                f"ToolRefusal.reason must be a Reason; got {type(self.reason).__name__}. The set "
+                "is closed on purpose: a consumer maps each reason onto a disposition, and one "
+                "nobody enumerated has none.",
+                details={"field": "reason"},
+            )
+        if not isinstance(self.detail, str) or not self.detail.strip():
+            raise ValidationError(
+                "ToolRefusal.detail must be a non-empty string: it is the sentence the model "
+                "reads, and a refusal it cannot act on teaches it nothing.",
+                details={"field": "detail"},
+            )
+        if self.status not in _REFUSAL_STATUSES:
+            raise ValidationError(
+                f"ToolRefusal.status must be one of "
+                f"{', '.join(sorted(s.value for s in _REFUSAL_STATUSES))}; got {self.status!r}. A "
+                "refusal reporting OK is the one shape that cannot be true.",
+                details={"field": "status"},
+            )
+        if self.record_detail is not None and not isinstance(self.record_detail, str):
+            raise ValidationError(
+                "ToolRefusal.record_detail must be a string or None.",
+                details={"field": "record_detail"},
             )
 
 
@@ -521,8 +661,8 @@ class ToolHandler(Protocol):
     it.
     """
 
-    def execute(self, args: Mapping[str, Any], context: ToolContext) -> ToolOutput:
-        """Do the work and return its output in full.
+    def execute(self, args: Mapping[str, Any], context: ToolContext) -> ToolOutput | ToolRefusal:
+        """Do the work and return its output in full, or return why it will not.
 
         Args:
             args: The validated arguments, with any declared path argument already replaced by its
@@ -531,7 +671,10 @@ class ToolHandler(Protocol):
             context: The invocation's trusted half.
 
         Returns:
-            A :class:`ToolOutput` holding the whole output. The executor caps and hashes it.
+            A :class:`ToolOutput` holding the whole output — the executor caps and hashes it — or a
+            :class:`ToolRefusal` naming the handler's own check that said no. A handler that
+            *raises* is reported as ``handler_error``, which names an exception class and not a
+            check, so anything the handler decided deliberately belongs in a ``ToolRefusal``.
         """
         ...
 

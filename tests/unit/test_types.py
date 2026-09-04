@@ -5,26 +5,35 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from baseaicore import ValidationError, canonical_json, sha256_of
 
 from fakes import EMPTY_SCHEMA, PATH_SCHEMA, spec
 from toolyard import (
+    REFUSAL_REASONS,
     TOOL_NAME_PATTERN,
     EgressClass,
+    InMemoryToolCallStore,
     InvalidToolSpec,
     PathAccess,
+    PathContainment,
     Reason,
     RiskClass,
     SandboxPaths,
     ToolCallRequest,
     ToolContext,
+    ToolExecutor,
     ToolOutput,
+    ToolRefusal,
+    ToolRegistry,
     ToolSpec,
     ToolStatus,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 GOLDEN = Path(__file__).resolve().parents[1] / "goldens" / "wire_definitions.json"
 
@@ -351,3 +360,70 @@ class TestClosedReasonSet:
     def test_the_reason_names_match_their_values(self) -> None:
         for reason in Reason:
             assert reason.name.lower() == reason.value
+
+
+class TestToolRefusal:
+    """A handler's own refusal — the type that makes spec §13's fetch rows expressible.
+
+    Without it a handler could only succeed or raise, and a raise is ``handler_error``, which names
+    an exception class and not a check. The validation below is why a handler cannot smuggle a
+    vocabulary past the closed reason set.
+    """
+
+    def test_a_refusal_defaults_to_refused(self) -> None:
+        """The common case is a rule of this package declining; ``FAILED`` is stated explicitly."""
+        assert ToolRefusal(Reason.TOO_LARGE, "over the cap").status is ToolStatus.REFUSED
+
+    @pytest.mark.parametrize("status", [ToolStatus.REFUSED, ToolStatus.FAILED, ToolStatus.TIMEOUT])
+    def test_every_non_ok_status_is_allowed(self, status: ToolStatus) -> None:
+        assert ToolRefusal(Reason.TIMEOUT, "elapsed", status=status).status is status
+
+    def test_a_refusal_reporting_ok_is_refused(self) -> None:
+        """The one shape that cannot be true."""
+        with pytest.raises(ValidationError, match="status"):
+            ToolRefusal(Reason.TOO_LARGE, "over", status=ToolStatus.OK)
+
+    @pytest.mark.parametrize("reason", ["too_large", None, 17, Reason])
+    def test_a_reason_outside_the_closed_set_is_refused(self, reason: object) -> None:
+        """A handler can no more invent a reason than the executor can (spec §7's Reason note)."""
+        with pytest.raises(ValidationError, match="reason"):
+            ToolRefusal(reason, "detail")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("detail", ["", "   ", None, 17])
+    def test_a_detail_that_says_nothing_is_refused(self, detail: object) -> None:
+        """It is the sentence the model reads; one it cannot act on teaches it nothing."""
+        with pytest.raises(ValidationError, match="detail"):
+            ToolRefusal(Reason.TOO_LARGE, detail)  # type: ignore[arg-type]
+
+    def test_a_record_detail_that_is_not_text_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="record_detail"):
+            ToolRefusal(Reason.TOO_LARGE, "over", record_detail=17)  # type: ignore[arg-type]
+
+    def test_a_record_detail_may_be_absent(self) -> None:
+        assert ToolRefusal(Reason.TOO_LARGE, "over").record_detail is None
+
+    def test_a_broken_refusal_raised_inside_a_handler_is_reported_as_a_handler_error(
+        self, workspace: SandboxPaths, store: InMemoryToolCallStore
+    ) -> None:
+        """A handler bug is never a broken agent loop: the raise happens in the handler's frame."""
+
+        class BrokenHandler:
+            def execute(self, args: Mapping[str, Any], context: ToolContext) -> ToolOutput:
+                del args, context
+                return ToolRefusal("not_a_reason", "x")  # type: ignore[arg-type,return-value]
+
+        registry = ToolRegistry()
+        registry.register(spec("broken"), BrokenHandler())
+        executor = ToolExecutor(
+            registry, PathContainment(), allowlist=frozenset({"broken"}), store=store
+        )
+        result = executor.execute(
+            ToolCallRequest(name="broken", args={"value": "x"}),
+            ToolContext(invocation_id="inv-1", workspace=workspace),
+        )
+        assert result.status is ToolStatus.FAILED
+        assert result.reason == Reason.HANDLER_ERROR.value
+
+    def test_every_reason_a_handler_may_produce_is_in_the_exported_set(self) -> None:
+        """`REFUSAL_REASONS` is what a consumer exhausts; a handler cannot widen it."""
+        assert {reason.value for reason in Reason} == set(REFUSAL_REASONS)
