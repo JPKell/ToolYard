@@ -11,6 +11,15 @@ Phases 1 and 2 of the development plan: the vocabulary, the registry, the execut
 order, path containment, the record, and the tiered isolation ladder. **Nothing is published yet** —
 `toolyard 0.1.0` ships at the end of Phase 3, with the built-in tools.
 
+### Fixed
+
+* **`install-check` imported the wrong package.** `.github/workflows/ci.yml` ran
+  `python -c "import cutctx"` — the toolchain was copied from CutCtx and this one line was never
+  adapted, so the job that proves the built wheel imports has never once proved it for this
+  package, and it has been failing since the workflow was written. It now imports `toolyard`. It
+  was the only leftover: nothing else under `.github/`, `pyproject.toml`, `requirements/`,
+  `README.md`, `CONTRIBUTING.md` or `SECURITY.md` named CutCtx.
+
 ### Added — Phase 2, sandbox
 
 * **`TieredSandbox`** (`sandbox.py`) — the ADR-0018 ladder applied to tools: container (`podman`
