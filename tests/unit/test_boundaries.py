@@ -27,6 +27,7 @@ ALLOWED_IMPORTS = frozenset(
         "datetime",
         "errno",
         "hashlib",
+        "ipaddress",
         "logging",
         "math",
         "os",
@@ -42,8 +43,10 @@ ALLOWED_IMPORTS = frozenset(
         "time",
         "typing",
         "uuid",
-        # the two suite/runtime dependencies gold standards §1.1 permits
+        # the suite foundation, plus the two non-suite runtime dependencies gold standards
+        # §1.1 permits this package — and the budget is now spent
         "baseaicore",
+        "httpx",
         "jsonschema",
         # the package itself
         "toolyard",
@@ -54,9 +57,13 @@ ALLOWED_IMPORTS = frozenset(
 Phase 2 added ``subprocess`` and what ``toolyard.sandbox`` needs to probe a tier and kill a process
 tree (``os``, ``selectors``, ``shutil``, ``signal``, ``sys``, ``tempfile``, ``threading``, ``time``,
 ``uuid``) — standard library, every one, and ``subprocess`` is separately constrained by
-`.importlinter` to that one module. Phase 3 adds ``httpx``, the same way. What this list catches is
-the *unexpected* one: a convenience dependency arriving with no ADR, in the package whose non-suite
-runtime budget is two.
+`.importlinter` to that one module. Phase 3 added ``httpx``, the same way, plus ``ipaddress`` for
+the link-local comparison and ``errno`` for the one syscall error containment distinguishes. What
+this list catches is the *unexpected* one: a convenience dependency arriving with no ADR, in the
+package whose non-suite runtime budget is two and is now spent.
+
+``socket`` is **not** here and never will be, which is why ``http_fetch`` takes its resolver as a
+required argument rather than shipping one.
 """
 
 

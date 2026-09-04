@@ -18,6 +18,15 @@ subpackage is each tool's own checks, and those are returned as
 from __future__ import annotations
 
 from toolyard.tools.command import DEFAULT_COMMAND_ENV, MIN_PROCESS_COUNT, run_command_tool
+from toolyard.tools.fetch import (
+    DEFAULT_ALLOWED_MEDIA_TYPES,
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_MAX_FETCH_BYTES,
+    DEFAULT_MAX_REDIRECTS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
+    Resolver,
+    http_fetch_tool,
+)
 from toolyard.tools.files import (
     DEFAULT_MAX_LIST_ENTRIES,
     DEFAULT_MAX_READ_BYTES,
@@ -27,10 +36,17 @@ from toolyard.tools.files import (
 )
 
 __all__ = [
+    "DEFAULT_ALLOWED_MEDIA_TYPES",
     "DEFAULT_COMMAND_ENV",
+    "DEFAULT_CONNECT_TIMEOUT_SECONDS",
+    "DEFAULT_MAX_FETCH_BYTES",
     "DEFAULT_MAX_LIST_ENTRIES",
     "DEFAULT_MAX_READ_BYTES",
+    "DEFAULT_MAX_REDIRECTS",
+    "DEFAULT_READ_TIMEOUT_SECONDS",
     "MIN_PROCESS_COUNT",
+    "Resolver",
+    "http_fetch_tool",
     "list_dir_tool",
     "read_file_tool",
     "run_command_tool",

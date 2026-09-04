@@ -27,11 +27,12 @@ dependencies = [
     # Argument validation, draft 2020-12 (spec §5, development plan Phase 1). One of the two
     # non-suite runtime dependencies gold standards §1.1 allows this package.
     "jsonschema>=4,<5",
-    # The second — `httpx`, for `http_fetch` — is deliberately NOT declared yet: nothing in this
-    # phase imports it, and declaring it would drag its transitive tree into `requirements/ci.lock`
-    # and into `pip-audit`'s blast radius for code that does not exist. Phase 3 (row E2) declares
-    # `httpx>=0.27,<1` in the same commit that first imports it. The `.importlinter` exemption that
-    # will permit that import is already written, so E2 adds a dependency and nothing else.
+    # The second and last. `http_fetch` opens the one socket this package has, and every ADR-0026
+    # §3 check is made around it — which needs a client whose redirects can be turned off and whose
+    # transport is injectable, so the whole vector set runs with no socket opened at all.
+    # `.importlinter` confines it to `toolyard.tools.fetch`; every other HTTP client, `socket` and
+    # `ssl` among them, stays forbidden in every module.
+    "httpx>=0.27,<1",
 ]
 
 [project.optional-dependencies]

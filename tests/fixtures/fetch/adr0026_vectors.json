@@ -1,0 +1,370 @@
+{
+  "$comment": "ADR-0026 §3 outbound-fetch vectors. ONE fixture, TWO repositories, byte-identical. Edit the ToolYard copy, re-copy into LoadCoach, and prove it with cmp — the sha256 is asserted in both, so a drift is a failing test rather than a discovery. Nothing here is specific to either implementation: no credential vectors (ToolYard has no credential surface at all), no bare-origin or `since` vectors (LoadCoach's evidence endpoint, not a general fetch), and every size is written relative to the configured cap because the cap is 8 MiB in ToolYard and 128 MiB in LoadCoach.",
+  "schema_version": "1.0",
+  "fields": {
+    "name": "unique identifier; also the pytest parameter id",
+    "why": "the ADR-0026 §3 rule this vector pins",
+    "url": "what the caller asks for",
+    "allowed_hosts": "the policy's host allowlist, always stated explicitly — the two implementations differ on what an EMPTY allowlist means (ToolYard: loopback only, spec §11.5; LoadCoach: nothing), so no vector leaves it out",
+    "max_bytes": "null means the implementation's configured default; an integer overrides it for this vector so a cap can be exercised without moving 128 MiB",
+    "max_redirects": "null means the implementation's default (3 in both)",
+    "resolves": "host -> addresses the injected resolver answers with. A host absent from this map resolves to nothing.",
+    "responses": "scripted, consumed in order, one per request the client makes. Each has status, headers, and one of body (literal text) or body_bytes_over_cap (a body of exactly cap + N bytes). `streamed: true` sends the body as chunks with NO Content-Length, which is the only way to reach the during-streaming check — a fixed body makes httpx declare a length, and the declared-length check would fire first and pass the test for the wrong reason. `declared_length_over_cap` sets Content-Length to cap + N explicitly.",
+    "expect": "{outcome: 'refused'|'failed'|'ok', reason: <the machine-readable reason both implementations must produce>, content_type: <for ok>}",
+    "requests_expected": "how many requests the client is allowed to have made — a check applied before a socket is opened must show as 0"
+  },
+  "vectors": [
+    {
+      "name": "a_file_url_is_refused_before_anything_is_resolved",
+      "why": "§3: scheme in {http, https} only. file:// is a local read in a URL's clothing.",
+      "url": "file:///etc/passwd",
+      "allowed_hosts": ["127.0.0.1", "localhost", "::1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": {},
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "scheme_not_allowed" },
+      "requests_expected": 0
+    },
+    {
+      "name": "an_ftp_url_is_refused",
+      "why": "§3: the scheme allowlist is closed, not a blocklist of file://.",
+      "url": "ftp://127.0.0.1/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": {},
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "scheme_not_allowed" },
+      "requests_expected": 0
+    },
+    {
+      "name": "a_url_naming_no_host_is_refused",
+      "why": "§3: an allowlist needs a host to check. Refused before resolution.",
+      "url": "http:///bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": {},
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "no_host" },
+      "requests_expected": 0
+    },
+    {
+      "name": "a_host_outside_the_allowlist_is_refused_without_connecting",
+      "why": "§3: a remote source must be listed explicitly — exposure is a deliberate act.",
+      "url": "http://evil.example/bundle.json",
+      "allowed_hosts": ["127.0.0.1", "localhost", "::1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "evil.example": ["203.0.113.7"] },
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "host_not_allowed" },
+      "requests_expected": 0
+    },
+    {
+      "name": "the_allowlist_is_matched_case_insensitively",
+      "why": "§3: hostnames are case-insensitive, so an allowlist that is not would be bypassable by shouting.",
+      "url": "http://LocalHost:8765/bundle.json",
+      "allowed_hosts": ["localhost"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "localhost": ["127.0.0.1"], "LocalHost": ["127.0.0.1"] },
+      "responses": [
+        { "status": 200, "headers": { "content-type": "application/json" }, "body": "{\"ok\":true}" }
+      ],
+      "expect": { "outcome": "ok", "content_type": "application/json" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_literal_link_local_address_is_refused_even_when_allowlisted",
+      "why": "§3: link-local is refused unconditionally — the cloud metadata range is the classic target. Being on the allowlist is not a second opinion.",
+      "url": "http://169.254.169.254/latest/meta-data/",
+      "allowed_hosts": ["169.254.169.254"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": {},
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "link_local_address" },
+      "requests_expected": 0
+    },
+    {
+      "name": "an_allowlisted_name_that_resolves_link_local_is_refused",
+      "why": "§3: 'and any address that resolves into them'. This is the vector a literal-only check misses.",
+      "url": "http://metadata.internal/latest/",
+      "allowed_hosts": ["metadata.internal"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "metadata.internal": ["169.254.169.254"] },
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "link_local_address" },
+      "requests_expected": 0
+    },
+    {
+      "name": "a_name_resolving_to_several_addresses_is_refused_if_any_is_link_local",
+      "why": "§3: one bad answer among good ones is still a bad answer. Order must not decide it.",
+      "url": "http://mixed.internal/doc",
+      "allowed_hosts": ["mixed.internal"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "mixed.internal": ["203.0.113.9", "169.254.169.254"] },
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "link_local_address" },
+      "requests_expected": 0
+    },
+    {
+      "name": "an_ipv6_link_local_literal_is_refused",
+      "why": "§3 names fe80::/10 alongside 169.254.0.0/16; a v4-only check is half a check.",
+      "url": "http://[fe80::1]/doc",
+      "allowed_hosts": ["fe80::1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": {},
+      "responses": [],
+      "expect": { "outcome": "refused", "reason": "link_local_address" },
+      "requests_expected": 0
+    },
+    {
+      "name": "a_redirect_to_another_host_is_refused",
+      "why": "§3: redirects are not followed across a host change, and no credential is ever forwarded across one.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        { "status": 302, "headers": { "location": "http://evil.example/bundle.json" } }
+      ],
+      "expect": { "outcome": "refused", "reason": "cross_host_redirect" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_redirect_to_the_metadata_address_is_refused_even_when_it_is_allowlisted",
+      "why": "The SSRF-through-redirect vector. Both implementations stop it at the host-change rule, which fires before the link-local rule — so an allowlist that names the metadata address does not open it.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1", "169.254.169.254"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": {},
+      "responses": [
+        { "status": 302, "headers": { "location": "http://169.254.169.254/latest/" } }
+      ],
+      "expect": { "outcome": "refused", "reason": "cross_host_redirect" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_redirect_that_changes_scheme_on_the_same_host_is_refused",
+      "why": "§3: every hop is re-checked IN FULL, not merely for a host change. The host is unchanged here, so only a second scheme check catches it — this is the vector a first-hop-only check misses.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        { "status": 302, "headers": { "location": "ftp://127.0.0.1/bundle.json" } }
+      ],
+      "expect": { "outcome": "refused", "reason": "scheme_not_allowed" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_same_host_redirect_is_followed_once",
+      "why": "§3 caps hops; it does not forbid them. The permitted case is pinned so a cap change cannot silently forbid all of them.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        { "status": 302, "headers": { "location": "/moved.json" } },
+        { "status": 200, "headers": { "content-type": "application/json" }, "body": "{\"ok\":true}" }
+      ],
+      "expect": { "outcome": "ok", "content_type": "application/json" },
+      "requests_expected": 2
+    },
+    {
+      "name": "redirects_past_the_cap_are_refused",
+      "why": "§3: total redirects capped. A same-host loop must terminate.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": 2,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        { "status": 302, "headers": { "location": "/1.json" } },
+        { "status": 302, "headers": { "location": "/2.json" } },
+        { "status": 302, "headers": { "location": "/3.json" } }
+      ],
+      "expect": { "outcome": "refused", "reason": "too_many_redirects" },
+      "requests_expected": 3
+    },
+    {
+      "name": "a_declared_content_length_over_the_cap_is_refused_before_the_body",
+      "why": "§3: the size cap. The declaration is the origin's claim and it is checked first, so an oversized transfer is never begun.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/json" },
+          "declared_length_over_cap": 1,
+          "body": "{\"this is not\": "
+        }
+      ],
+      "expect": { "outcome": "refused", "reason": "too_large" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_body_that_outgrows_the_cap_is_stopped_mid_stream",
+      "why": "§3: enforced DURING streaming, so an origin that declares no length at all — chunked, which is what a streaming export does — is still bounded. `streamed` is load-bearing: with a fixed body httpx declares a Content-Length and the earlier check fires instead, and this vector would pass without ever running the code it names.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": 8192,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/json" },
+          "body_bytes_over_cap": 1,
+          "streamed": true,
+          "chunk_bytes": 1024
+        }
+      ],
+      "expect": { "outcome": "refused", "reason": "too_large" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_chunked_body_within_the_cap_is_read_to_the_end",
+      "why": "The streaming path's success case, so that tightening the mid-stream comparison cannot quietly refuse every chunked response.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": 8192,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/json" },
+          "body_bytes_over_cap": -4096,
+          "streamed": true,
+          "chunk_bytes": 1024
+        }
+      ],
+      "expect": { "outcome": "ok", "content_type": "application/json" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_body_exactly_at_the_cap_is_accepted",
+      "why": "The cap is a limit, not an off-by-one. Pinned so tightening the comparison cannot go unnoticed.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": 8192,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/json" },
+          "body_bytes_over_cap": 0
+        }
+      ],
+      "expect": { "outcome": "ok", "content_type": "application/json" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_content_type_outside_the_allowlist_is_refused_before_parsing",
+      "why": "§3: Content-Type verified before parsing. The body here is deliberately malformed, so a check that ran after parsing would fail differently.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/octet-stream" },
+          "body": "{\"this is not\": "
+        }
+      ],
+      "expect": { "outcome": "refused", "reason": "content_type_not_allowed" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_missing_content_type_is_refused",
+      "why": "Default closed: an absent header is not a permissive one.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [{ "status": 200, "headers": {}, "body": "{\"ok\":true}" }],
+      "expect": { "outcome": "refused", "reason": "content_type_not_allowed" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_charset_parameter_does_not_defeat_the_content_type_check",
+      "why": "The media type is the part before the semicolon; comparing the whole header would refuse every correctly-labelled response.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/json; charset=utf-8" },
+          "body": "{\"ok\":true}"
+        }
+      ],
+      "expect": { "outcome": "ok", "content_type": "application/json" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_structured_json_suffix_is_admitted",
+      "why": "RFC 6839's +json suffix is JSON. Both implementations admit it, so it is shared rather than left to drift.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/vnd.suite+json" },
+          "body": "{\"ok\":true}"
+        }
+      ],
+      "expect": { "outcome": "ok", "content_type": "application/vnd.suite+json" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_server_error_is_a_failure_and_not_a_refusal",
+      "why": "The REFUSED/FAILED line: the origin answered badly, no rule of ours declined anything, and retrying may be meaningful.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        { "status": 503, "headers": { "content-type": "application/json" }, "body": "{}" }
+      ],
+      "expect": { "outcome": "failed", "reason": "http_status" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_transport_failure_is_a_failure_and_not_a_refusal",
+      "why": "Same line, the other side of it: the origin was never heard from.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": null,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [{ "raise": "connect_error" }],
+      "expect": { "outcome": "failed", "reason": "transport_error" },
+      "requests_expected": 1
+    }
+  ]
+}

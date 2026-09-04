@@ -17,17 +17,17 @@ without them every CI run re-resolves, and a new `ruff` or `mypy` release can ch
 no commit to explain it — and `pip-audit` would be auditing today's resolution rather than what the
 build actually used.
 
-## The runtime dependencies, and the one that is deliberately absent
+## The runtime dependencies
 
 Gold standards §1.1 gives ToolYard a non-suite runtime budget of **two**: `jsonschema` and `httpx`.
-Only the first is declared today.
+Both are declared, and the budget is now spent.
 
-`httpx` belongs to `http_fetch`, which is Phase 3 (row E2). Declaring it now would drag its
-transitive tree — `httpcore`, `h11`, `anyio`, `certifi`, `idna`, `sniffio` — into this lock and into
-`pip-audit`'s blast radius, so a CVE in a package no line of this repository imports could turn CI
-red. It is declared in the same commit that first imports it. The `.importlinter` exemption that
-will permit that import (`toolyard.tools.fetch -> httpx`) is **already written**, so E2 adds a
-dependency and a module, and changes no boundary rule.
+`httpx` was held back until Phase 3 on purpose — declaring it earlier would have dragged its
+transitive tree (`httpcore`, `h11`, `anyio`, `certifi`, `idna`, `sniffio`) into this lock and into
+`pip-audit`'s blast radius, so a CVE in a package no line of this repository imported could have
+turned CI red. It arrived in the same commit that first imported it. `.importlinter` confines it to
+`toolyard.tools.fetch`; the exemption was written two phases before the import, so Phase 3 added a
+dependency and a module and changed no boundary rule.
 
 `hypothesis` is a development dependency and does not touch the runtime budget. ToolYard's central
 claim — that nothing a model can influence raises — is a statement about *arbitrary* input, so it is
