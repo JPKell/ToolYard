@@ -7,9 +7,11 @@ change the public surface.
 
 ## [Unreleased]
 
-Phases 1 and 2 of the development plan: the vocabulary, the registry, the executor's fixed refusal
-order, path containment, the record, and the tiered isolation ladder. **Nothing is published yet** —
-`toolyard 0.1.0` ships at the end of Phase 3, with the built-in tools.
+## [0.1.0] — 2026-09-03
+
+The first release. Phases 1 to 3 of the development plan: the vocabulary, the registry, the
+executor's fixed refusal order, path containment, the record, the tiered isolation ladder, and the
+five built-in tools.
 
 ### Added — Phase 3, the built-in tools
 
