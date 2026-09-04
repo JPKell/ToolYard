@@ -11,6 +11,93 @@ Phases 1 and 2 of the development plan: the vocabulary, the registry, the execut
 order, path containment, the record, and the tiered isolation ladder. **Nothing is published yet** —
 `toolyard 0.1.0` ships at the end of Phase 3, with the built-in tools.
 
+### Added — Phase 3, the built-in tools
+
+* **The five built-ins**, each returning the `(ToolSpec, ToolHandler)` pair the registry takes, so
+  registration reads `registry.register(*read_file_tool())` and nothing registers implicitly.
+  * `read_file`, `write_file`, `list_dir` (`tools/files.py`). **No handler resolves a path** — each
+    declares its path argument in `path_args`, the executor resolves it and substitutes the result
+    before the handler runs (spec §11.3), and a second resolution would reopen the window the first
+    one closed. A consequence worth stating: the handler never sees the model's own string, so
+    every message a model reads is rendered *relative to the root that holds it* and the absolute
+    path goes only to the record.
+  * `run_command` (`tools/command.py`), holding the **same sandbox instance the executor holds**
+    (spec §7 as amended at D1, decision A) so the tier the executor checked is the tier the command
+    runs under. Argv only, no shell, no network, an explicit `PATH`-only environment that is the
+    caller's with no argument through which a model could reach it, and both the exit code and
+    `output_truncated` rendered so a truncated success is distinguishable from a clean one.
+  * `http_fetch` (`tools/fetch.py`), performing every ADR-0026 §3 check at the socket and
+    re-checking **in full** on every redirect hop.
+* **`ToolRefusal`** — a handler returns one instead of output when its own check says no. Without
+  it, spec §13's *"REFUSED / the specific ADR-0026 check"* was unexpressible: a handler could only
+  succeed or raise, and a raise is `FAILED` / `handler_error`, which names an exception class
+  rather than a check. Its `reason` is a `Reason`, so the closed set stays closed for handlers too.
+  `ToolHandler.execute` now returns `ToolOutput | ToolRefusal`; widening a return type is backwards
+  compatible and an existing handler still satisfies the protocol.
+* **Fifteen new `Reason` members** — nine ADR-0026 §3 checks, the two ways an origin fails, and
+  four ways a file argument names something unusable. Adding a reason is a **minor** change
+  consumers must be told about (spec §19), and doing it before the first publish is free exactly
+  once. The fetch strings mirror LoadCoach's exactly, so a reviewer comparing the two
+  implementations is not also translating.
+* **One ADR-0026 §3 vector set, byte-shared with LoadCoach.**
+  `tests/fixtures/fetch/adr0026_vectors.json` is authored here and copied into LoadCoach
+  byte-for-byte; its sha256 is asserted in both repositories, so an edit on one side alone fails a
+  test rather than becoming a divergence found later in production. Twenty-four cases drive this
+  package's tool here and `FreeWeightClient` there. **LoadCoach passed every one unchanged** — no
+  behaviour change and nothing touched under its `src/`. Sizes are expressed relative to the
+  configured cap, because it is 8 MiB here and 128 MiB there.
+* **`httpx>=0.27,<1`**, declared in the same commit that first imports it, as
+  `requirements/README.md` promised. It is the second and last non-suite runtime dependency gold
+  standards §1.1 allows, and the budget is now spent. `.importlinter` is unchanged: the
+  `toolyard.tools.fetch -> httpx` exemption was written two phases before the import.
+* **`acceptance/register_and_execute.py`** — spec §20 criterion 2 as a runnable check rather than a
+  demonstration. It registers a custom tool and executes it with only `toolyard` and its declared
+  dependencies installed, and exits non-zero when a claim fails.
+* **The five built-ins' wire definitions are golden-locked** (`tests/goldens/`). They are what a
+  model reads and what PromptCadence hashes into its turn records, so a description change is a
+  change to every recorded turn.
+
+### Decided — Phase 3
+
+* **`http_fetch`'s `resolve` is required and has no default.** Spec §11.5 requires the link-local
+  comparison to happen after resolution; `.importlinter` forbids `socket` in every module of this
+  package, forever. So ToolYard opens no resolver socket of its own and the application injects
+  one. Required rather than defaulted because every default available is either that boundary
+  violation or a resolver that answers nothing — and one that answers nothing makes the check
+  vacuous without saying so. A literal IP is never passed to the resolver: it already is the
+  answer, and letting an application-supplied callable erase a link-local literal is the one case
+  that must not depend on anything injectable.
+* **Where the REFUSED/FAILED line falls.** `REFUSED` is this package declining under a rule of its
+  own, where the identical call will be declined again for the same reason. `FAILED` is the work
+  attempted and the world answering badly, where a different argument or a later attempt may
+  succeed. So `too_large` is a refusal and `file_not_found` is a failure — assigned by that test
+  and not by how serious the outcome sounds. The `FAILED` rows are refinements of `handler_error`,
+  existing so a model is told what was wrong with its argument instead of an exception's name.
+* **`read_file` refuses an oversized file rather than returning a prefix**, while `list_dir`
+  truncates and says how many it omitted. The difference follows from the record: `result_sha256`
+  digests the handler's whole output, so a prefix would make the recorded digest a digest of the
+  prefix; nothing hashes a listing against an original.
+* **`write_file` creates parents one level at a time**, refusing any component that is a symbolic
+  link. The development plan named this phase's failure mode as *"creating parents outside the root
+  via a symlinked intermediate directory"*, and `mkdir(parents=True)` is exactly how it happens. A
+  link that existed at resolution time was already resolved through, so the check exists for the
+  case where one is planted between check 5 and the write. **The race itself is not closed** —
+  that needs `openat`/`O_NOFOLLOW` and therefore `os`, and `.importlinter` gives this module
+  `pathlib` alone, deliberately. The window is narrowed to one component and the residual is
+  written down.
+* **The content-type allowlist is closed, small and text.** LoadCoach admits JSON because it parses
+  JSON; this tool returns a string to a model, and a model handed a decoded PNG has been handed
+  noise. A `+json` structured suffix is admitted, as it is there, so a shared vector holds in both.
+* **`_next_hop` does not guard its own `join`.** httpx parses the `Location` header while it builds
+  the response, so a header that is not a URL arrives as a transport error before the redirect
+  logic runs; a guard would be a branch no input could take. A test pins that behaviour, so if
+  httpx ever stops pre-parsing, a test says so rather than a model receiving an exception.
+* **The DNS residual is stated, not implied away.** `http_fetch` resolves and then connects, and
+  those are two operations. A name whose answer changes between them — rebinding against an
+  allowlisted host — is outside what this design addresses; closing it needs the connection pinned
+  to the address that was checked, and httpx exposes no seam for that. The allowlist stands in its
+  place and no docstring claims otherwise.
+
 ### Fixed
 
 * **`install-check` imported the wrong package.** `.github/workflows/ci.yml` ran

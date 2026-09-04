@@ -5,14 +5,14 @@ place in the suite that runs a real, side-effecting operation on a model's behal
 place the discipline lives: schema validation, allowlisting, path containment, tiered subprocess
 isolation, egress-checked fetching, structured refusals, and a persisted record of every call.
 
-**Status: Phase 2, unreleased.** The vocabulary, the registry, the executor's fixed refusal order,
-path containment, the record, and the isolation ladder — container → bwrap → refuse — are built and
-gated. The five built-in tools (`read_file`, `write_file`, `list_dir`, `run_command`, `http_fetch`)
-are Phase 3, which is when `toolyard 0.1.0` is published. Nothing here is on PyPI yet, and the only
-tools in this repository today are harmless fakes under `tests/`.
+**Status: Phase 3 complete, `0.1.0` prepared.** The vocabulary, the registry, the executor's fixed
+refusal order, path containment, the record, the isolation ladder — container → bwrap → refuse —
+and the five built-in tools (`read_file`, `write_file`, `list_dir`, `run_command`, `http_fetch`)
+are built and gated. Publication is an operator step and has not happened; nothing here is on PyPI
+yet.
 
 * Import name and distribution name: `toolyard`
-* Runtime dependencies: `baseaicore`, `jsonschema` — and `httpx` from Phase 3
+* Runtime dependencies: `baseaicore`, `jsonschema`, `httpx` — and that is the whole budget
 * Python: 3.12+
 * Specification: [`docs/packages/toolyard/spec.md`](docs/packages/toolyard/spec.md) ·
   plan: [`docs/packages/toolyard/development-plan.md`](docs/packages/toolyard/development-plan.md)
@@ -140,6 +140,57 @@ are not a complete sequence. A request that fails every check is walked down all
 | **Isolation never degrades silently** | Container → bwrap → refuse, each rung proven by running its real argv around `/bin/true`. No tier means `isolation_unavailable`, never an unisolated run — and a rung that fails after it was decided raises rather than degrading |
 | **The child environment is an allowlist** | `env=None` is the empty mapping, never `os.environ`; the sandbox binary itself is launched with `PATH` alone |
 | **A limit is enforced or reported** | CPU time, memory, file size and process count, applied inside the sandbox; whatever a rung cannot apply is named in `limits_unenforced` (ADR-0016) |
+| **One fetch discipline, proven shared** | The ADR-0026 §3 checks are made at the socket, and `tests/fixtures/fetch/adr0026_vectors.json` is byte-identical to LoadCoach's copy, drives both implementations, and has its sha256 asserted in both repositories |
+| **`http_fetch` carries no credential** | No `Authorization` header, no environment or file read, no argument through which a secret could arrive |
+| **A handler refuses by returning** | `ToolRefusal` carries a `Reason` from the same closed set the executor uses, so a fetch violation reports the specific check rather than an exception's class name |
+
+## The five built-in tools
+
+| Tool | Class | What it refuses |
+|---|---|---|
+| `read_file` | `READ_ONLY` | A path outside the readable roots; a file over the cap (refused whole, never returned in part); bytes that are not UTF-8 |
+| `write_file` | `MUTATING` | A path outside the write root; a parent directory that is a symbolic link; a final component that is one |
+| `list_dir` | `READ_ONLY` | A path outside the readable roots; anything that is not a directory. Sorted, capped, and it says how many it omitted |
+| `run_command` | `MUTATING` | Everything, on a host with no isolation tier. Argv only — no shell, no network, no `os.environ` |
+| `http_fetch` | `READ_ONLY`, `NETWORK` | Every ADR-0026 §3 rule, re-checked on every redirect hop; a response that is not text; a body over the cap, stopped mid-stream |
+
+Each returns the `(spec, handler)` pair the registry takes:
+
+```python
+registry.register(*read_file_tool())
+registry.register(*run_command_tool(sandbox))  # the executor's own sandbox instance
+registry.register(*http_fetch_tool(["docs.example"], resolve=my_resolver))
+```
+
+`http_fetch`'s `resolve` is required and has no default. The link-local rule compares addresses
+*after* resolution, and `.importlinter` forbids `socket` in every module of this package — so
+ToolYard opens no resolver socket of its own, and the application supplies one:
+
+```python
+import socket
+
+
+def my_resolver(host: str) -> list[str]:
+    try:
+        return [info[4][0] for info in socket.getaddrinfo(host, None)]
+    except OSError:
+        return []
+```
+
+A resolver that answers nothing for every host makes the link-local check vacuous, which is exactly
+why this argument has no default rather than a convenient one.
+
+## Acceptance
+
+`acceptance/register_and_execute.py` is spec §20 criterion 2 as a runnable check: it registers a
+custom tool and executes it with only `toolyard` and its declared dependencies installed. It exits
+non-zero when a claim fails, so it is a check rather than a demonstration.
+
+```bash
+python -m venv /tmp/toolyard-acceptance
+/tmp/toolyard-acceptance/bin/pip install .
+/tmp/toolyard-acceptance/bin/python acceptance/register_and_execute.py
+```
 
 ## Isolation: container → bwrap → refuse
 

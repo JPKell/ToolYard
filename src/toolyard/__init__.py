@@ -25,11 +25,11 @@ and the five checks between the second line and the third run in one fixed order
 allowlist → schema → egress → containment — reporting the **first** that fails, so a refusal is
 diagnosable from the record alone.
 
-**Status: Phase 2, unreleased.** The vocabulary, the registry, the executor's refusal order, path
-containment, the record, and the tiered isolation ladder — container → bwrap → refuse, probed with
-a canary and never degraded silently — are built and gated. The five built-in tools (Phase 3) are
-not here yet; ``toolyard 0.1.0`` is published at the end of Phase 3. Nothing in this package is on
-PyPI.
+**Status: Phase 3 complete, ``0.1.0`` prepared.** The vocabulary, the registry, the executor's
+refusal order, path containment, the record, the tiered isolation ladder — container → bwrap →
+refuse, probed with a canary and never degraded silently — and the five built-in tools are built
+and gated. Publication is an operator step and has not happened; nothing in this package is on
+PyPI yet.
 """
 
 from __future__ import annotations
