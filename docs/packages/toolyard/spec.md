@@ -1,7 +1,7 @@
 # ToolYard — Specification
 
 **Type:** Python package · **Import/distribution name:** `toolyard` · **Layer:** 3 (capability package)
-**Status:** Specified, not implemented. Part of the PromptCadence arc
+**Status:** Implemented and published as `toolyard 0.1.1`. Part of the PromptCadence arc
 ([roadmap](../../roadmap/promptcadence-roadmap.md)); decision record D-9 (tool execution discipline),
 extending [ADR-0018](../../adr/0018-external-benchmark-isolation.md) (tiered sandboxing) and
 [ADR-0026 §3](../../adr/0026-local-http-hardening.md) (outbound fetch) to model-directed tools.

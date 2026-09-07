@@ -5,6 +5,9 @@ Depends on `baseaicore>=0.4.1`. Independent of the other new packages; may run i
 CutCtx.
 **Target:** `toolyard 0.1.0` at the end of Phase 3; `0.2.0` (hardened, macOS/Windows refusal
 behaviour verified) before PromptCadence 1.0.
+**Shipped:** `0.1.0` at row E2; **`0.1.1` is published** (row I4 — `json_sanitize` exported from the
+package root). The `0.2.0` hardening minor was never scheduled; PromptCadence pins
+`toolyard>=0.1.1,<0.2`.
 
 The ordering is security-first: the refusal machinery and containment exist and are tested
 **before** any handler that could do harm, so at no commit in this repository's history does an
