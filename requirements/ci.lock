@@ -14,9 +14,9 @@ attrs==26.1.0 \
     # via
     #   jsonschema
     #   referencing
-baseaicore==0.4.1 \
-    --hash=sha256:08739699d4770c07e89975980a99978213d499dd8e5b9784b5de3fceb472172a \
-    --hash=sha256:94fd95a67e758398a7951e83e2ef45c92ee6650fe2c163362758b77bf674b91f
+baseaicore==0.4.2 \
+    --hash=sha256:be055b82d8858189b032bc2e3de85a68b2ab35d6792481eebbc8817fe3e486d0 \
+    --hash=sha256:c4f82cdd698d85ca7e23dd175b1f6c61f9a38f5c9b194d0a308a5d38ff7c6110
     # via toolyard (pyproject.toml)
 certifi==2026.7.22 \
     --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
