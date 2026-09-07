@@ -25,16 +25,23 @@ and the five checks between the second line and the third run in one fixed order
 allowlist → schema → egress → containment — reporting the **first** that fails, so a refusal is
 diagnosable from the record alone.
 
-**Status: Phase 3 complete, ``0.1.0`` prepared.** The vocabulary, the registry, the executor's
+**One function is public for a reason worth stating.** :func:`~toolyard._safe.json_sanitize` is
+exported here because ``args_sha256`` on a :class:`~toolyard.types.ToolCallRecord` is the digest of
+the *sanitized* arguments, and a caller that emits its own event about the same call has to be able
+to produce the same number. Reimplementing the sanitization to do that would put two copies of a
+hardening routine in two repositories and make them agree only by transcription — which is exactly
+how the digests drift apart. Borrow this one instead.
+
+**Status: Phase 3 complete, ``0.1.1``.** The vocabulary, the registry, the executor's
 refusal order, path containment, the record, the tiered isolation ladder — container → bwrap →
 refuse, probed with a canary and never degraded silently — and the five built-in tools are built
-and gated. Publication is an operator step and has not happened; nothing in this package is on
-PyPI yet.
+and gated. ``0.1.0`` is published; this line said otherwise until ``0.1.1`` and was wrong.
 """
 
 from __future__ import annotations
 
 from toolyard.__about__ import __version__
+from toolyard._safe import json_sanitize
 from toolyard.containment import (
     IsolationTier,
     PathAccess,
@@ -101,6 +108,7 @@ from toolyard.types import (
 from toolyard.validation import MAX_ARGS_DEPTH, MAX_ARGS_NODES, ArgsValidator
 
 __all__ = [
+    "json_sanitize",
     "write_file_tool",
     "run_command_tool",
     "read_file_tool",

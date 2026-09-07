@@ -7,6 +7,21 @@ change the public surface.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-09-06
+
+### Added
+- **`json_sanitize` is exported from the package root.** It was reachable only as
+  `toolyard._safe.json_sanitize`, and a caller needed it: `args_sha256` on a `ToolCallRecord` is
+  the digest of the *sanitized* arguments, so anything that emits its own event about the same
+  tool call has to be able to compute the same number. The alternative is a second copy of a
+  hardening routine that must agree byte for byte with this one, which is how two digests of the
+  same call drift apart — PromptCadence 1.0.1 fixes exactly that defect and needs this export to
+  fix it without duplicating the walk. The function itself is unchanged; only its visibility moves.
+
+### Fixed
+- **The package docstring no longer claims nothing is on PyPI.** `toolyard 0.1.0` was published;
+  the status paragraph still said publication had not happened.
+
 ## [0.1.0] — 2026-09-03
 
 The first release. Phases 1 to 3 of the development plan: the vocabulary, the registry, the
