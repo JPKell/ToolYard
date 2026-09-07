@@ -5,11 +5,10 @@ place in the suite that runs a real, side-effecting operation on a model's behal
 place the discipline lives: schema validation, allowlisting, path containment, tiered subprocess
 isolation, egress-checked fetching, structured refusals, and a persisted record of every call.
 
-**Status: Phase 3 complete, `0.1.0` prepared.** The vocabulary, the registry, the executor's fixed
+**Status: Phase 3 complete, `0.1.1` — on PyPI.** The vocabulary, the registry, the executor's fixed
 refusal order, path containment, the record, the isolation ladder — container → bwrap → refuse —
 and the five built-in tools (`read_file`, `write_file`, `list_dir`, `run_command`, `http_fetch`)
-are built and gated. Publication is an operator step and has not happened; nothing here is on PyPI
-yet.
+are built and gated.
 
 * Import name and distribution name: `toolyard`
 * Runtime dependencies: `baseaicore`, `jsonschema`, `httpx` — and that is the whole budget
