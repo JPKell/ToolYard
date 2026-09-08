@@ -1,26 +1,26 @@
-"""Containment — the sandbox port, its vocabulary, and the Phase-1 implementation of its path half.
+"""Containment — the sandbox port, its vocabulary, and the path half of its implementation.
 
-This module is the seam Phase 2 (row D1) implements into, and it is deliberately split so that the
-seam is not a stub. Two halves:
+:class:`~toolyard.sandbox.TieredSandbox` composes this module for paths and adds the isolation
+ladder; the split keeps the seam from being a stub. Two halves:
 
 * **Path containment is real here, now.** :class:`PathContainment` resolves a candidate fully —
   symlinks, ``..``, relative components — and *then* compares it against the roots, which is the
   order spec §11.3 fixes and the only order that is safe. It is the executor's fifth check, and
   ``path_escape`` is reachable and tested in this phase, because the development plan's ordering
   rule is that the refusal machinery exists before anything that could do harm.
-* **Isolation is honestly absent.** :meth:`PathContainment.isolation_tier` returns
+* **Isolation is honestly absent here.** :meth:`PathContainment.isolation_tier` returns
   :attr:`IsolationTier.UNAVAILABLE`, because this implementation has no container tier and no
   bwrap tier — it has no tier at all. ADR-0018's ladder ends in refusal, so an implementation
   with no rungs refuses, and the executor refuses any tool declaring ``requires_isolation`` before
   a handler runs. A permissive stand-in that reported a tier it did not have would be the "warning
   instead of a containment" the ADR rejects verbatim.
 
-**What Phase 2 must do, and must not.** D1 adds ``toolyard.sandbox`` with the tier probe and
-``run_isolated``, and composes or subclasses :class:`PathContainment` for the path half rather than
-re-deriving it — a second resolution-then-check implementation is a second chance to compare before
-resolving. ``tests/unit/test_containment.py`` is the contract; extend it, never relax it. The
-vocabulary below (:class:`SandboxPaths`, :class:`IsolationTier`, :class:`SubprocessResult`,
-:class:`PathAccess`) is Phase 1's and is imported from here, never redefined.
+:mod:`toolyard.sandbox` supplies the tier probe and ``run_isolated`` and composes
+:class:`PathContainment` for the path half rather than re-deriving it — a second
+resolution-then-check implementation is a second chance to compare before resolving.
+``tests/unit/test_containment.py`` is the contract; extend it, never relax it. The vocabulary below
+(:class:`SandboxPaths`, :class:`IsolationTier`, :class:`SubprocessResult`, :class:`PathAccess`) is
+imported from here, never redefined.
 """
 
 from __future__ import annotations
@@ -79,8 +79,8 @@ class IsolationTier(StrEnum):
     """The subprocess isolation available on this host — ADR-0018's ladder, applied to tools.
 
     The order is the ADR's, verbatim, and the lowest rung is refusal rather than "run it anyway":
-    the deployment with no tier available is exactly the one nobody is watching. Nothing probes for
-    a tier until Phase 2; the vocabulary is here so that phase finds it waiting.
+    the deployment with no tier available is exactly the one nobody is watching.
+    :class:`~toolyard.sandbox.TieredSandbox` probes for a tier; the vocabulary lives here.
     """
 
     CONTAINER = "container"
@@ -157,7 +157,7 @@ class SandboxPaths:
 
 @dataclass(frozen=True, slots=True)
 class SubprocessResult:
-    """What an isolated command did. Produced by Phase 2's ``run_isolated``; defined here.
+    """What an isolated command did. Produced by ``run_isolated``; defined here.
 
     Attributes:
         exit_code: The child's exit status.
@@ -168,7 +168,7 @@ class SubprocessResult:
             command, because correctness is comparable across tiers and performance is not.
         timed_out: Whether the process tree was killed for exceeding its limit.
         limits_unenforced: The names of resource limits this platform could not apply — ADR-0016's
-            rule, in the place Phase 2 needs it: an unenforceable limit is *reported*, never
+            rule, in the place the sandbox needs it: an unenforceable limit is *reported*, never
             assumed. An empty tuple means every declared limit was applied; it never means "no
             limits were asked for", which is what a ``None`` here would have been unable to
             distinguish.
@@ -234,6 +234,28 @@ def fully_resolve(path: Path) -> Path:
         return path.resolve()
 
 
+def require_timeout_seconds(field_name: str, value: float) -> None:
+    """Refuse a timeout that is not a finite positive number.
+
+    There is no way to say "no timeout" (spec §11.8), and ``inf`` would be that. Shared by the
+    executor's default and the sandbox's probe and per-call limits so the three refuse identically.
+
+    Raises:
+        ValidationError: If ``value`` is not a number, or is not finite and greater than zero.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValidationError(
+            f"{field_name} must be a number of seconds; got {type(value).__name__}.",
+            details={"field": field_name},
+        )
+    if not value > 0 or value != value or value in (float("inf"), float("-inf")):  # noqa: PLR0124
+        raise ValidationError(
+            f"{field_name} must be finite and greater than zero; got {value!r}. A timeout is "
+            "mandatory (spec §11.8), and an infinite one would be no timeout.",
+            details={"field": field_name},
+        )
+
+
 class PathEscape(Exception):
     """A candidate path resolved outside every root it was checked against.
 
@@ -241,8 +263,8 @@ class PathEscape(Exception):
     only, and a path escape is the opposite — it is the model doing precisely what the threat model
     says it will. This is an internal signal between containment and the executor, which converts
     it into a ``REFUSED`` result before it can leave
-    :meth:`~toolyard.executor.ToolExecutor.execute`. Phase 3's file tools catch it for the same
-    reason, which is why it is exported.
+    :meth:`~toolyard.executor.ToolExecutor.execute`. The file tools catch it for the same reason,
+    which is why it is exported.
 
     Attributes:
         candidate: What was asked for, cleaned and capped. Safe to show a model — it is the model's
@@ -264,10 +286,11 @@ class PathEscape(Exception):
 
 
 class Sandbox(Protocol):
-    """The port the executor holds: containment now, isolation from Phase 2.
+    """The port the executor holds: path containment and process isolation.
 
-    The executor depends on this Protocol and never on a concrete class, so D1 can supply the full
-    implementation without touching :mod:`toolyard.executor`. There is deliberately no ``None``
+    The executor depends on this Protocol and never on a concrete class, so
+    :class:`~toolyard.sandbox.TieredSandbox` supplies the full implementation without touching
+    :mod:`toolyard.executor`. There is deliberately no ``None``
     option and no default: an executor without a sandbox would be an executor whose fifth check
     does nothing, and a check that does nothing is worse than an absent one because the fixed
     refusal order would then be a claim rather than a fact.
@@ -322,7 +345,7 @@ class Sandbox(Protocol):
         env: Mapping[str, str] | None = None,
         network: bool = False,
     ) -> SubprocessResult:
-        """Run an argv under the highest available tier. Phase 2's work.
+        """Run an argv under the highest available tier.
 
         Args:
             argv: The command and its arguments, already split. Never a shell string; there is no
@@ -346,7 +369,7 @@ class Sandbox(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class PathContainment:
-    """Phase 1's honest sandbox: real path containment, and no isolation because there is none.
+    """The path half of the sandbox: real containment, and no isolation because there is none.
 
     Resolution-then-check, in that order and never the reverse (spec §11.3). A candidate is turned
     into an absolute, symlink-free path *first*, and only the result is compared against the roots.
@@ -365,8 +388,7 @@ class PathContainment:
     symlink swapped between them defeats a resolved path. This class narrows that window to nothing
     it can control — it returns the resolved path so a caller never re-resolves the candidate — but
     closing it entirely needs ``O_NOFOLLOW`` and directory file descriptors at the point of use,
-    which is Phase 2's work in ``toolyard.sandbox`` and is named as that phase's likely failure
-    mode.
+    which :mod:`toolyard.sandbox` owns at the launch boundary.
 
     Attributes:
         follow_symlinks_note: Not a setting. There is no option here to skip resolution, to compare
@@ -393,8 +415,8 @@ class PathContainment:
         """Report :attr:`IsolationTier.UNAVAILABLE`, because this implementation has no tier.
 
         Returns:
-            :attr:`IsolationTier.UNAVAILABLE`, always. Phase 1 probes nothing and runs nothing, and
-            reporting a tier it does not have is the one thing ADR-0018 forbids outright.
+            :attr:`IsolationTier.UNAVAILABLE`, always. This class probes nothing and runs nothing,
+            and reporting a tier it does not have is the one thing ADR-0018 forbids outright.
         """
         return IsolationTier.UNAVAILABLE
 
@@ -415,13 +437,13 @@ class PathContainment:
                 refuses any tool declaring ``requires_isolation`` at its containment check, before
                 a handler exists to call this — so arriving here means calling it directly, which
                 means an application built a command tool against a containment object that has no
-                tiers. Phase 2's ``toolyard.sandbox`` is what implements this.
+                tiers. :class:`~toolyard.sandbox.TieredSandbox` is what implements this.
         """
         del argv, paths, timeout_seconds, env, network
         raise ToolYardError(
-            "PathContainment implements no process isolation; it is Phase 1's path-containment "
-            "half of the sandbox port. Register no tool that requires isolation against it, or "
-            "supply toolyard.sandbox's implementation (Phase 2). The executor already refuses "
+            "PathContainment implements no process isolation; it is the path-containment half "
+            "of the sandbox port. Register no tool that requires isolation against it, or "
+            "supply toolyard.sandbox.TieredSandbox. The executor already refuses "
             "such tools with `isolation_unavailable` before any handler runs.",
             details={"isolation_tier": IsolationTier.UNAVAILABLE.value},
         )

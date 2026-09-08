@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Final
 from baseaicore import ValidationError, canonical_json, monotonic_ns, sha256_of
 
 from toolyard._safe import clean_text, json_sanitize, truncate_text
-from toolyard.containment import PathAccess, PathEscape
+from toolyard.containment import PathAccess, PathEscape, require_timeout_seconds
 from toolyard.errors import StoreFailure
 from toolyard.types import (
     MAX_RECORDED_NAME_CHARS,
@@ -369,7 +369,7 @@ class ToolExecutor:
                 "the only thing that decides what is callable at all.",
                 details={"field": "allowlist"},
             )
-        _require_positive_finite("default_timeout_seconds", default_timeout_seconds)
+        require_timeout_seconds("default_timeout_seconds", default_timeout_seconds)
         for name, value in (
             ("max_content_bytes", max_content_bytes),
             ("max_summary_bytes", max_summary_bytes),
@@ -642,21 +642,6 @@ class ToolExecutor:
         if not isinstance(end_ns, int) or end_ns < start_ns:
             return 0.0
         return (end_ns - start_ns) / 1_000_000
-
-
-def _require_positive_finite(field_name: str, value: float) -> None:
-    """Refuse a timeout that is not a finite positive number. ``inf`` would mean "no timeout"."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValidationError(
-            f"{field_name} must be a number of seconds; got {type(value).__name__}.",
-            details={"field": field_name},
-        )
-    if not value > 0 or value != value or value in (float("inf"), float("-inf")):  # noqa: PLR0124
-        raise ValidationError(
-            f"{field_name} must be finite and greater than zero; got {value!r}. There is no way to "
-            'express "no timeout" (spec §11.8), and an infinite one would be that.',
-            details={"field": field_name},
-        )
 
 
 def _sentence(tool_name: str, refusal: _Refusal) -> str:

@@ -31,6 +31,7 @@ in its place. Nothing in this module's docstrings claims an address pinning it d
 from __future__ import annotations
 
 import ipaddress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
@@ -128,35 +129,16 @@ _URL_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _FetchPolicy:
     """One fetch's rules, resolved from the factory's arguments and never from a model's."""
 
-    __slots__ = (
-        "allowed_hosts",
-        "allowed_media_types",
-        "connect_timeout_seconds",
-        "max_bytes",
-        "max_redirects",
-        "read_timeout_seconds",
-    )
-
-    def __init__(
-        self,
-        *,
-        allowed_hosts: tuple[str, ...],
-        max_bytes: int,
-        max_redirects: int,
-        allowed_media_types: tuple[str, ...],
-        connect_timeout_seconds: float,
-        read_timeout_seconds: float,
-    ) -> None:
-        """Hold the validated policy. Every value is the caller's."""
-        self.allowed_hosts = allowed_hosts
-        self.max_bytes = max_bytes
-        self.max_redirects = max_redirects
-        self.allowed_media_types = allowed_media_types
-        self.connect_timeout_seconds = connect_timeout_seconds
-        self.read_timeout_seconds = read_timeout_seconds
+    allowed_hosts: tuple[str, ...]
+    max_bytes: int
+    max_redirects: int
+    allowed_media_types: tuple[str, ...]
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
 
 
 def _refuse(reason: Reason, detail: str, *, record_detail: str | None = None) -> ToolRefusal:
@@ -380,10 +362,7 @@ class _HttpFetch:
                 "across a host change",
                 record_detail=f"redirect_host={nxt.host!r}, origin_host={origin_host!r}",
             )
-        recheck = _check_url(str(nxt), self._policy, resolve=self._resolve)
-        if isinstance(recheck, ToolRefusal):
-            return recheck
-        return recheck
+        return _check_url(str(nxt), self._policy, resolve=self._resolve)
 
     def _read(self, response: httpx.Response, target: httpx.URL) -> ToolOutput | ToolRefusal:
         """Verify the head, then stream the body under the cap, then decode it.

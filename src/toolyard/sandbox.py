@@ -87,7 +87,13 @@ from typing import IO, TYPE_CHECKING, Final, Protocol
 from baseaicore import ValidationError, monotonic_ns
 
 from toolyard._safe import clean_text, truncate_text
-from toolyard.containment import IsolationTier, PathContainment, SandboxPaths, SubprocessResult
+from toolyard.containment import (
+    IsolationTier,
+    PathContainment,
+    SandboxPaths,
+    SubprocessResult,
+    require_timeout_seconds,
+)
 from toolyard.errors import ToolYardError
 
 if TYPE_CHECKING:
@@ -409,7 +415,7 @@ class TieredSandbox:
                 f"{max_output_bytes!r}.",
                 details={"field": "max_output_bytes", "minimum": MIN_OUTPUT_BYTES},
             )
-        _require_timeout("probe_timeout_seconds", probe_timeout_seconds)
+        require_timeout_seconds("probe_timeout_seconds", probe_timeout_seconds)
         if not callable(which) or (runner is not None and not callable(runner)):
             raise ValidationError(
                 "which and runner must be callable; they are the probe's and the launcher's "
@@ -516,7 +522,7 @@ class TieredSandbox:
                 "without declaring it.",
                 details={"isolation_tier": report.tier.value},
             )
-        _require_timeout("timeout_seconds", timeout_seconds)
+        require_timeout_seconds("timeout_seconds", timeout_seconds)
         if network:
             raise ValidationError(
                 "run_isolated(network=True) is refused in v1: no shipped tool runs a subprocess "
@@ -949,21 +955,6 @@ def _checked_env(env: Mapping[str, str] | None) -> dict[str, str]:
             )
         checked[name] = value
     return checked
-
-
-def _require_timeout(field_name: str, value: float) -> None:
-    """Refuse a timeout that is not a finite positive number; there is no way to say "none"."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValidationError(
-            f"{field_name} must be a number of seconds; got {type(value).__name__}.",
-            details={"field": field_name},
-        )
-    if not value > 0 or value != value or value in (float("inf"), float("-inf")):  # noqa: PLR0124
-        raise ValidationError(
-            f"{field_name} must be finite and greater than zero; got {value!r}. A timeout is "
-            "mandatory (spec §11.8).",
-            details={"field": field_name},
-        )
 
 
 def _container_name() -> str:

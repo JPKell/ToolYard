@@ -15,6 +15,16 @@ change the public surface.
 - `tests/unit/test_readme_version.py` — asserts the version README.md states after its `Status:`
   line equals `__about__.__version__`, so a release cannot leave the README stale (row L7).
 
+### Changed
+
+- `containment.py`'s docstrings describe the shipped package rather than the phase plan that built
+  it: `TieredSandbox` and the file tools exist, so "Phase 2 will" narrative is gone. The
+  `PathContainment.run_isolated` refusal names `toolyard.sandbox.TieredSandbox` directly.
+- One timeout validator, `containment.require_timeout_seconds`, replaces the identical private
+  copies the executor and the sandbox each carried; the refusal text is unchanged in substance.
+- `_FetchPolicy` is a frozen dataclass; `_next_hop` returns `_check_url`'s answer directly.
+  No behaviour change.
+
 ## [0.1.1] — 2026-09-06
 
 ### Added

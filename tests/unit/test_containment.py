@@ -288,7 +288,7 @@ class TestIsolationIsHonestlyAbsent:
     def test_running_a_command_is_refused_rather_than_stubbed(
         self, phase_one: PathContainment, roots: SandboxPaths
     ) -> None:
-        with pytest.raises(ToolYardError, match="Phase 2"):
+        with pytest.raises(ToolYardError, match="TieredSandbox"):
             phase_one.run_isolated(["echo", "hi"], paths=roots, timeout_seconds=1.0)
 
     def test_there_is_no_flag_that_skips_resolution(self, phase_one: PathContainment) -> None:
