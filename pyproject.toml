@@ -79,6 +79,10 @@ ignore = ["D100", "D104"]
 # output of, so printing is its whole interface. It is not imported by the package and not part of
 # the wheel; `T201` is the rule for library code, which this is not.
 "acceptance/**" = ["T201"]
+# `docs/quickstart.py` is the ten-line runnable example `docs/quickstart.md` publishes the
+# output of: printing is what it is for. Everything else under `docs/` is mirrored markdown,
+# which ruff does not read.
+"docs/*.py" = ["T20"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

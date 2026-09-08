@@ -16,6 +16,15 @@ are built and gated.
 * Specification: [`docs/packages/toolyard/spec.md`](docs/packages/toolyard/spec.md) ·
   plan: [`docs/packages/toolyard/development-plan.md`](docs/packages/toolyard/development-plan.md)
 
+## Install
+
+```bash
+pip install toolyard
+```
+
+Runtime dependencies: `baseaicore`, `jsonschema`, `httpx`. See
+[`docs/quickstart.md`](docs/quickstart.md) for a ten-line runnable example.
+
 ## The one thing to understand: a refusal is a result
 
 Not an exception. A tool that does not exist, a name outside the allowlist, arguments that fail the
