@@ -307,7 +307,9 @@ retention; oversize outputs go to the application's artifact directory, referenc
    it, and the no-`shell=True` test greps this package's own source, not application-supplied
    handlers.
 5. **`http_fetch` performs the ADR-0026 §3 checks itself** — scheme http/https, host in the
-   caller's allowlist (loopback only when empty), literal-IP comparison after DNS resolution,
+   caller's allowlist (loopback only when empty — deliberately, [ADR-0122](../../adr/0122-an-empty-fetch-allowlist-means-loopback-and-no-host-is-not-registering.md):
+   a consumer that wants *no* host does not register the tool, because a registered tool that
+   can fetch nothing misdescribes the process to the model), literal-IP comparison after DNS resolution,
    re-checking on every redirect hop, size cap enforced during streaming — so no consumer can
    forget them. Resolution is the injected `resolve`, because this package opens no socket of its
    own; a resolver that answers nothing for a host leaves the link-local rule with nothing to

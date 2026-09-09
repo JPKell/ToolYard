@@ -453,8 +453,10 @@ def http_fetch_tool(
     Args:
         allowed_hosts: The hosts this tool may fetch from. **Empty means loopback only**
             (:data:`LOOPBACK_HOSTS`), never everything: an allowlist that defaulted open would be
-            an allowlist in name. Compared case-insensitively against the URL's host, and the
-            members are never named back to a model.
+            an allowlist in name. **A consumer that wants no host at all does not register the
+            tool** (ADR-0122): a registered tool that refuses every URL misdescribes the process
+            to the model, so the closed state is the tool's absence. Compared case-insensitively
+            against the URL's host, and the members are never named back to a model.
         resolve: Hostname resolution. Required, with no default — see :data:`Resolver`.
         max_bytes: The transfer cap, applied to a declared ``Content-Length`` and during streaming.
         max_redirects: How many same-host hops to follow. Each hop is re-checked in full.

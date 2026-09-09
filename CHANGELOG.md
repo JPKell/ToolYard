@@ -17,6 +17,9 @@ change the public surface.
 
 ### Changed
 
+- `http_fetch_tool`'s docstring states that an empty allowlist is loopback *deliberately* and
+  that "no host at all" is expressed by not registering the tool (ADR-0122, row N3). No API or
+  behaviour change.
 - `containment.py`'s docstrings describe the shipped package rather than the phase plan that built
   it: `TieredSandbox` and the file tools exist, so "Phase 2 will" narrative is gone. The
   `PathContainment.run_isolated` refusal names `toolyard.sandbox.TieredSandbox` directly.
