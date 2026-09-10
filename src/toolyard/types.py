@@ -161,7 +161,7 @@ class Reason(StrEnum):
 
     Closed on purpose. A consumer maps a reason onto its own deviation category — PromptCadence
     onto the ``undeclared_tool`` row of
-    ([lifecycle §5](https://github.com/JPKell/OpenWeight-Gym/blob/main/apps/promptcadence/lifecycle.md#5-deviation-handling))
+    ([lifecycle §5](https://github.com/JPKell/weightroom/blob/main/apps/promptcadence/lifecycle.md#5-deviation-handling))
     — and a category nobody enumerated has no defined disposition, so an unrecognized reason string
     is a bug in this package and a property test asserts none is ever produced. Adding a reason is
     a **minor** version change (spec §19) and a change consumers must be told about; it is not a
