@@ -229,7 +229,7 @@ five built-in tools.
 
 ### Decided — Phase 2
 
-Recorded in `docs/history/D1_HANDOFF.md`, for E2 and E4:
+Recorded in `docs/history/handoffs/D1_HANDOFF.md`, for E2 and E4:
 
 * **rlimits go through `prlimit`, inside the sandbox, not through `resource` in a `preexec_fn`.**
   `preexec_fn` is documented unsafe in a threaded process, and the consumer is a threaded server;
@@ -258,7 +258,7 @@ Recorded in `docs/history/D1_HANDOFF.md`, for E2 and E4:
 ### Decided — Phase 1
 
 Four shapes spec §7 left under-determined were settled in Phase 1 and are recorded in
-`docs/history/C2_HANDOFF.md` for the phases that follow:
+`docs/history/handoffs/C2_HANDOFF.md` for the phases that follow:
 
 * **The allowlist narrows and never widens.** The trajectory allowlist is the executor's; a
   per-invocation set narrows it through `ToolContext.approved_tools`, and the effective set is the
